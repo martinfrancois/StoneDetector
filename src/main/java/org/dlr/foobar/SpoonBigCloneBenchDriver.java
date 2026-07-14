@@ -508,7 +508,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       if (!(m instanceof CtMethodImpl) && !(m instanceof CtConstructorImpl)) {
 	  return null;
       }
-      if (m instanceof CtConstructor && ((CtConstructor) m).getPosition() instanceof NoSourcePosition) {
+      if (!((CtExecutable) m).getPosition().isValidPosition()) {
 	  return null;
       }
 
