@@ -72,6 +72,7 @@ class AnalysisCompletenessTest {
         assertTrue(result.stderr().contains("Successfully created CFG for 9 out of 9 methods"));
         assertTrue(result.stderr().contains("Successfully created DomTree for 9 out of 9 methods"));
         assertTrue(result.stderr().contains("Successfully encoded paths for 9 out of 9 methods"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
         assertTrue(Files.readString(errors).isEmpty());
         assertFalse(result.stderr().contains("Analysis incomplete"));
     }

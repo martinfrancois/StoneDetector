@@ -183,19 +183,17 @@ public class CompletePathEncoder extends Encoder<ControlFlowNode>{
 	}
 
 	if(e == null || e.getClass() == null){
-	    System.out.println(e);
-	    return;
+	    Assertions.UNREACHABLE("Cannot encode a control-flow node without a statement");
 	}
 
 	if(ht == null || ht.get(e.getClass().toString()) == null){
-	    System.out.println("++++++++++++++++++++++++++++++++++++++++++" +  ht.get(e.getClass().toString()));
-	    
-
-
-	    System.out.println("++++++++++++++++++++++++++++++++++++++++++" +e);
-	    System.out.println("++++++++++++++++++++++++++++++++++++++++++" +e.getClass());
-
-	    return;
+		if (e instanceof CtCasePattern) {
+			getOperators((CtCasePattern) e, opKind);
+			number += opKind.size();
+			setEncodingArray(opKind.size());
+			return;
+		}
+		Assertions.UNREACHABLE("Cannot encode statement " + e.getClass().getName());
 	}
 
 	//System.out.println("No. " + e.getClass().toString() + " "+ e);
