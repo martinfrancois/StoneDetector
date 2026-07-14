@@ -70,6 +70,8 @@ where StoneDetector will look for code clones in directory `path/to/Java/Folder`
 StoneDetector prints detected code clones by default onto the screen. Each line specifies a single clone pair using the format `directory1,filename1,startline1,endline1,directory2,filename2,startline2,endline2`, where `directory1,filename1,startline1,endline1` specifies the location of the one code fragment and `directory2,filename2,startline2,endline2` specifies the location of the other code fragment. Note that the order of the code fragments in the clone pair is not significant.
 For example, `test,Example.java,4,18,test,Example.java,19,33` denotes the clone pair which is formed by the two code fragments between lines 4 to 18 and lines 19 to 33, respectively, in file `test/Example.java`.
 
+Clone output is sorted deterministically. If parsing, control-flow construction, or path encoding is incomplete, StoneDetector writes the available diagnostics to `--error-file`, emits no partial clone result, and exits with status 2.
+
 ### Configuration
 
 The StoneDetector tool provides various configuration parameters, which allow you to play with its code clone detection capabilities. The tool's configuration parameters are defined in the file `config/default.properties`.
