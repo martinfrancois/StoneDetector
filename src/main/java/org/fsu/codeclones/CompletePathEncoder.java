@@ -31,6 +31,17 @@ import spoon.reflect.code.CtThisAccess;
 import spoon.reflect.code.CtTypeAccess;
 import spoon.reflect.code.CtReturn;
 import spoon.reflect.code.CtAssert;
+import spoon.reflect.code.CtCase;
+import spoon.reflect.code.CtCasePattern;
+import spoon.reflect.code.CtExecutableReferenceExpression;
+import spoon.reflect.code.CtLambda;
+import spoon.reflect.code.CtPattern;
+import spoon.reflect.code.CtRecordPattern;
+import spoon.reflect.code.CtStatement;
+import spoon.reflect.code.CtSwitchExpression;
+import spoon.reflect.code.CtTypePattern;
+import spoon.reflect.code.CtUnnamedPattern;
+import spoon.reflect.code.CtYieldStatement;
 import spoon.support.reflect.code.CtBinaryOperatorImpl;
 import spoon.reflect.code.BinaryOperatorKind;
 import spoon.reflect.code.UnaryOperatorKind;
@@ -491,14 +502,7 @@ public class CompletePathEncoder extends Encoder<ControlFlowNode>{
 					}
 
 					functionNames.add(method);
-					Integer number = DominatorTree.methodTable.get(method);
-
-					if (number == null ){
-						number = DominatorTree.hashCounter++;
-						DominatorTree.methodTable.put(method, number);
-					}
-
-					hashNumber = number;
+					hashNumber = DominatorTree.methodCode(method);
 				}
 				list.add(numberToCode(inv.getArguments().size()));
 				if (functionParameters) {
@@ -523,11 +527,7 @@ public class CompletePathEncoder extends Encoder<ControlFlowNode>{
 					else
 						method = inv.getExecutable().toString().split("\\(")[0];
 
-					Integer number = DominatorTree.methodTable.get(method);
-					if (number == null ){
-						number = DominatorTree.hashCounter++;
-						DominatorTree.methodTable.put(method, number);
-					}
+					int number = DominatorTree.methodCode(method);
 					functionNames.add(method);
 					hashNumber = number;
 				}
@@ -548,13 +548,7 @@ public class CompletePathEncoder extends Encoder<ControlFlowNode>{
 			String method = "<init>";
 			functionNames.add(method);
 			if (encodeAsInRegistercode){
-				Integer number = DominatorTree.methodTable.get(method);
-
-				if (number == null ){
-					number = DominatorTree.hashCounter++;
-					DominatorTree.methodTable.put(method, number);
-				}
-				hashNumber = number;
+				hashNumber = DominatorTree.methodCode(method);
 			}
 			return;
 
@@ -583,8 +577,59 @@ public class CompletePathEncoder extends Encoder<ControlFlowNode>{
 			list.add(unaryOperatorToCode(((CtUnaryOperator)value).getKind()));
 			getOperators(((CtUnaryOperator)value).getOperand(),list);
 			return;
+		} else if (value instanceof CtLambda) {
+			CtLambda<?> lambda = (CtLambda<?>) value;
+			list.add(Code.EXPR);
+			list.add(numberToCode(lambda.getParameters().size()));
+			getOperators(lambda.getExpression(), list);
+			return;
+		} else if (value instanceof CtExecutableReferenceExpression) {
+			CtExecutableReferenceExpression<?, ?> reference =
+					(CtExecutableReferenceExpression<?, ?>) value;
+			list.add(Code.CALL);
+			getOperators(reference.getTarget(), list);
+			return;
+		} else if (value instanceof CtTypePattern) {
+			list.add(Code.TYPE);
+			return;
+		} else if (value instanceof CtCasePattern) {
+			list.add(Code.TYPE);
+			CtPattern pattern = ((CtCasePattern) value).getPattern();
+			if (pattern instanceof CtExpression) {
+				getOperators((CtExpression<?>) pattern, list);
+			}
+			return;
+		} else if (value instanceof CtRecordPattern) {
+			list.add(Code.TYPE);
+			for (CtPattern pattern : ((CtRecordPattern) value).getPatternList()) {
+				if (pattern instanceof CtExpression) {
+					getOperators((CtExpression<?>) pattern, list);
+				}
+			}
+			return;
+		} else if (value instanceof CtUnnamedPattern) {
+			list.add(Code.VAR);
+			return;
+		} else if (value instanceof CtSwitchExpression) {
+			CtSwitchExpression<?, ?> switchExpression = (CtSwitchExpression<?, ?>) value;
+			list.add(Code.SWITCH);
+			getOperators(switchExpression.getSelector(), list);
+			for (CtCase<?> switchCase : switchExpression.getCases()) {
+				for (CtExpression<?> caseExpression : switchCase.getCaseExpressions()) {
+					getOperators(caseExpression, list);
+				}
+				getOperators(switchCase.getGuard(), list);
+				for (CtStatement statement : switchCase.getStatements()) {
+					if (statement instanceof CtYieldStatement) {
+						getOperators(((CtYieldStatement) statement).getExpression(), list);
+					} else if (statement instanceof CtExpression) {
+						getOperators((CtExpression<?>) statement, list);
+					}
+				}
+			}
+			return;
 		}
-		Assertions.UNREACHABLE("Cannot find operator");
+		Assertions.UNREACHABLE("Cannot find operator " + value.getClass().getName());
     }
     
     public boolean isPathInDescriptionSet(List<Encoder> path, List<List<Encoder>> set,

@@ -260,13 +260,7 @@ public class SortedMultisetPathEncoder extends Encoder<ControlFlowNode> implemen
 	    String clazz = ((CtNewArray)value).getType() + "" + ((CtNewArray)value).getElements();
 	    //System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! " + clazz);
 
-	    Integer number = DominatorTree.methodTable.get(clazz);
-	    if (number == null ){
-	    	number = DominatorTree.hashCounter++;
-	    	DominatorTree.methodTable.put(clazz, number);
-	    }
-
-	    hashNumber = number.intValue();
+	    hashNumber = DominatorTree.methodCode(clazz);
 	    //System.out.println(hashNumber);*/
             return;
         } else if (value instanceof CtLiteral) {
@@ -312,13 +306,7 @@ public class SortedMultisetPathEncoder extends Encoder<ControlFlowNode> implemen
 	    String target = ((CtFieldAccess)value).getVariable().toString();
 	    //System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! " + target);
 
-	    Integer number = DominatorTree.methodTable.get(target);
-	    if (number == null ){
-	    	number = DominatorTree.hashCounter++;
-	    	DominatorTree.methodTable.put(target, number);
-	    }
-
-	    hashNumber = number.intValue();
+	    hashNumber = DominatorTree.methodCode(target);
 	    //System.out.println(hashNumber);*/
             return;
         } else if (value instanceof CtFieldWrite) {
@@ -328,13 +316,7 @@ public class SortedMultisetPathEncoder extends Encoder<ControlFlowNode> implemen
 	    String target = ((CtFieldAccess)value).getVariable().toString();
 	    //System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! " + target);
 
-	    Integer number = DominatorTree.methodTable.get(target);
-	    if (number == null ){
-	    	number = DominatorTree.hashCounter++;
-	    	DominatorTree.methodTable.put(target, number);
-	    }
-
-	    hashNumber = number.intValue();
+	    hashNumber = DominatorTree.methodCode(target);
 	    //System.out.println(hashNumber);
 	    //System.out.println(value);*/
 
@@ -350,13 +332,7 @@ public class SortedMultisetPathEncoder extends Encoder<ControlFlowNode> implemen
                 String method = inv.getExecutable().toString().split("\\(")[0];
                 //System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! " + method);
 
-                Integer number = DominatorTree.methodTable.get(method);
-                if (number == null) {
-                    number = DominatorTree.hashCounter++;
-                    DominatorTree.methodTable.put(method, number);
-                }
-
-                hashNumber = number.intValue();
+                hashNumber = DominatorTree.methodCode(method);
             }
             list.add(numberToCode(inv.getArguments().size()));
             for (CtExpression m : (List<CtExpression>) inv.getArguments())
@@ -392,9 +368,60 @@ public class SortedMultisetPathEncoder extends Encoder<ControlFlowNode> implemen
             list.add(unaryOperatorToCode(((CtUnaryOperator) value).getKind()));
             getOperators(((CtUnaryOperator) value).getOperand(), list);
             return;
+        } else if (value instanceof CtLambda) {
+            CtLambda<?> lambda = (CtLambda<?>) value;
+            list.add(Code.EXPR);
+            list.add(numberToCode(lambda.getParameters().size()));
+            getOperators(lambda.getExpression(), list);
+            return;
+        } else if (value instanceof CtExecutableReferenceExpression) {
+            CtExecutableReferenceExpression<?, ?> reference =
+                    (CtExecutableReferenceExpression<?, ?>) value;
+            list.add(Code.CALL);
+            getOperators(reference.getTarget(), list);
+            return;
+        } else if (value instanceof CtTypePattern) {
+            list.add(Code.TYPE);
+            return;
+        } else if (value instanceof CtCasePattern) {
+            list.add(Code.TYPE);
+            CtPattern pattern = ((CtCasePattern) value).getPattern();
+            if (pattern instanceof CtExpression) {
+                getOperators((CtExpression<?>) pattern, list);
+            }
+            return;
+        } else if (value instanceof CtRecordPattern) {
+            list.add(Code.TYPE);
+            for (CtPattern pattern : ((CtRecordPattern) value).getPatternList()) {
+                if (pattern instanceof CtExpression) {
+                    getOperators((CtExpression<?>) pattern, list);
+                }
+            }
+            return;
+        } else if (value instanceof CtUnnamedPattern) {
+            list.add(Code.VAR);
+            return;
+        } else if (value instanceof CtSwitchExpression) {
+            CtSwitchExpression<?, ?> switchExpression = (CtSwitchExpression<?, ?>) value;
+            list.add(Code.SWITCH);
+            getOperators(switchExpression.getSelector(), list);
+            for (CtCase<?> switchCase : switchExpression.getCases()) {
+                for (CtExpression<?> caseExpression : switchCase.getCaseExpressions()) {
+                    getOperators(caseExpression, list);
+                }
+                getOperators(switchCase.getGuard(), list);
+                for (CtStatement statement : switchCase.getStatements()) {
+                    if (statement instanceof CtYieldStatement) {
+                        getOperators(((CtYieldStatement) statement).getExpression(), list);
+                    } else if (statement instanceof CtExpression) {
+                        getOperators((CtExpression<?>) statement, list);
+                    }
+                }
+            }
+            return;
         }
 
-        Assertions.UNREACHABLE("Cannot find operator");
+        Assertions.UNREACHABLE("Cannot find operator " + value.getClass().getName());
         //System.out.println("Not knowm");
 
     }
