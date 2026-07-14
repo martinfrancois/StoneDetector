@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,6 +13,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
+import javax.tools.JavaCompiler;
+import javax.tools.ToolProvider;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -75,6 +79,166 @@ class AnalysisCompletenessTest {
         assertTrue(result.stdout().isEmpty(), result.stdout());
         assertTrue(Files.readString(errors).isEmpty());
         assertFalse(result.stderr().contains("Analysis incomplete"));
+    }
+
+    @Test
+    void explicitClasspathResolvesProjectTypesWithoutRunningABuildTool() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("classpath-project"));
+        Path dependencySources = Files.createDirectories(project.resolve("dependency/p"));
+        Path classes = Files.createDirectory(project.resolve("classes"));
+        Path incompleteClasses = Files.createDirectory(project.resolve("incomplete-classes"));
+        Path sources = Files.createDirectory(project.resolve("sources"));
+        Path dependency = dependencySources.resolve("Callbacks.java");
+        Files.writeString(dependency, callbackTypes(), StandardCharsets.UTF_8);
+        compile(classes, dependency);
+        Files.writeString(sources.resolve("Sample.java"), classpathDependentSource(), StandardCharsets.UTF_8);
+        Files.writeString(
+                sources.resolve("module-info.java"),
+                "open module sample.module { requires unavailable.module; }\n",
+                StandardCharsets.UTF_8);
+        Path classpathFile = project.resolve("classpath.txt");
+        Files.writeString(classpathFile, "classes\n", StandardCharsets.UTF_8);
+        Path incompleteClasspathFile = project.resolve("incomplete-classpath.txt");
+        Files.writeString(incompleteClasspathFile, "incomplete-classes\n", StandardCharsets.UTF_8);
+        Path incompleteClasspathErrors = project.resolve("incomplete-classpath-errors.txt");
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult unresolved = runStone(
+                project,
+                incompleteClasspathErrors,
+                "--source-root=sources",
+                "--classpath-file=" + incompleteClasspathFile,
+                "--skipclones");
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-root=sources",
+                "--classpath-file=" + classpathFile,
+                "--skipclones");
+
+        assertEquals(2, unresolved.exitCode(), unresolved.stderr() + unresolved.stdout());
+        assertTrue(unresolved.stderr().contains("Analysis incomplete"));
+        assertFalse(Files.readString(incompleteClasspathErrors).isEmpty());
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 2 out of 2 files"));
+        assertTrue(result.stderr().contains("Successfully encoded paths for 1 out of 1 methods"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void explicitSourceRootsAnalyzeOnlyTheRequestedSourceSet() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("source-root-project"));
+        Path selectedOne = Files.createDirectory(project.resolve("selected"));
+        Path selectedTwo = Files.createDirectory(selectedOne.resolve("generated"));
+        Path excluded = Files.createDirectory(project.resolve("excluded"));
+        Files.writeString(selectedOne.resolve("ValidOne.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Files.writeString(selectedTwo.resolve("ValidTwo.java"), cloneSource(2), StandardCharsets.UTF_8);
+        Files.writeString(excluded.resolve("Broken.java"), "class Broken { void method( { }", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-root=selected",
+                "--source-root=selected/generated",
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 2 out of 2 files"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void invalidExplicitClasspathFailsBeforeSourceAnalysis() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("invalid-classpath-project"));
+        Files.writeString(project.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path classpathFile = project.resolve("classpath.txt");
+        Files.writeString(classpathFile, "missing/classes\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result =
+                runStone(project, errors, "--classpath-file=" + classpathFile, "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stdout().contains("Classpath entry does not exist: missing/classes"));
+        assertFalse(result.stderr().contains("Parsing Java source file"));
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void inTreeSymbolicLinkRootsAreCanonicalizedAndAnalyzedOnce() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("symlink-source-root-project"));
+        Path sources = Files.createDirectory(project.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path linkedSources = project.resolve("linked-sources");
+        createSymbolicLinkOrSkip(linkedSources, sources.getFileName());
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-root=sources",
+                "--source-root=linked-sources",
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void sourceRootsDeduplicateHardLinkedSources() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("hard-link-source-root"));
+        Path source = project.resolve("Original.java");
+        Files.writeString(source, cloneSource(1), StandardCharsets.UTF_8);
+        createHardLinkOrSkip(project.resolve("Alias.java"), source);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(project, errors, "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void intermediateSymbolicLinkCannotEscapeTheWorkingDirectory() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("symlink-containment-project"));
+        Path external = Files.createDirectories(temporaryDirectory.resolve("external/sources"));
+        Files.writeString(external.resolve("External.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path linkedParent = project.resolve("linked-parent");
+        createSymbolicLinkOrSkip(linkedParent, external.getParent());
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result =
+                runStone(project, errors, "--source-root=linked-parent/sources", "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stdout().contains(
+                "Source root resolves outside the working directory: linked-parent/sources"));
+        assertFalse(result.stderr().contains("Parsing Java source file"));
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void canonicalAbsoluteRootWorksWithASymbolicLinkWorkingDirectory() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("real-project"));
+        Path sources = Files.createDirectory(project.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path linkedProject = temporaryDirectory.resolve("linked-project");
+        createSymbolicLinkOrSkip(linkedProject, project);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result =
+                runStone(linkedProject, errors, "--source-root=" + sources, "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
     }
 
     @Test
@@ -160,6 +324,69 @@ class AnalysisCompletenessTest {
                     }
                 }
                 """.formatted(index);
+    }
+
+    private static String callbackTypes() {
+        return """
+                package p;
+
+                public final class Callbacks {
+                    private Callbacks() {}
+
+                    public interface Source {
+                        Object call(java.util.function.Function<Object, Object> callback);
+                    }
+
+                    public interface Marker {}
+                }
+                """;
+    }
+
+    private static String classpathDependentSource() {
+        return """
+                import p.Callbacks.Marker;
+                import p.Callbacks.Source;
+
+                class Sample {
+                    Object transform(Source source) {
+                        return source.call(value -> {
+                            final class Local implements Marker {}
+                            return new Local();
+                        });
+                    }
+                }
+                """;
+    }
+
+    private static void compile(Path outputDirectory, Path source) {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        assertTrue(compiler != null, "Tests require a JDK, not a JRE");
+        int result = compiler.run(
+                null,
+                OutputStream.nullOutputStream(),
+                OutputStream.nullOutputStream(),
+                "-d",
+                outputDirectory.toString(),
+                source.toString());
+        assertEquals(0, result, "Dependency fixture must compile");
+    }
+
+    private static void createSymbolicLinkOrSkip(Path link, Path target) {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
+            Assumptions.assumeTrue(
+                    false, "Symbolic links are unavailable: " + exception.getClass().getSimpleName());
+        }
+    }
+
+    private static void createHardLinkOrSkip(Path link, Path target) {
+        try {
+            Files.createLink(link, target);
+        } catch (IOException | UnsupportedOperationException | SecurityException exception) {
+            Assumptions.assumeTrue(
+                    false, "Hard links are unavailable: " + exception.getClass().getSimpleName());
+        }
     }
 
     private static List<FeatureSource> java25LanguageFeatures() {

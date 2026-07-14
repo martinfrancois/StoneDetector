@@ -16,8 +16,11 @@ import org.fsu.bytecode.ByteCodePathExtraction;
 import org.fsu.bytecode.HashEncoderRegisterCode;
 import org.fsu.codeclones.*;
 import spoon.Launcher;
+import spoon.reflect.CtModel;
 import spoon.reflect.cu.position.NoSourcePosition;
 import spoon.reflect.declaration.*;
+import spoon.reflect.reference.CtTypeReference;
+import spoon.reflect.visitor.filter.TypeFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.commons.cli.*;
@@ -32,6 +35,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.EnumSet;
@@ -70,12 +75,15 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   //private Path currentFile;
   private static final ThreadLocal<Path> currentFile = new ThreadLocal<>();
   private String workingDirectory, outputDirectory;
+  private List<Path> sourceRoots;
+  private String[] sourceClasspath = new String[0];
 
   private static final ArrayList<MethodTuple> outputTuples = new ArrayList<MethodTuple>();
   private MethodTuple[] outputTuplesArray;
 
   public SpoonBigCloneBenchDriver(String workingDirectory) {
     this.workingDirectory = workingDirectory;
+    this.sourceRoots = List.of(Paths.get(workingDirectory));
   }
 
   void setErrors(boolean errors) {this.errors = errors;}
@@ -96,6 +104,18 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         true, "working directory for bigclonebench");
     option.setRequired(true);
     options.addOption(option);
+    options.addOption(Option.builder()
+        .longOpt("source-root")
+        .hasArg()
+        .argName("directory")
+        .desc("Source root to scan; repeat for one source set (defaults to --directory)")
+        .get());
+    options.addOption(Option.builder()
+        .longOpt("classpath-file")
+        .hasArg()
+        .argName("file")
+        .desc("UTF-8 file containing one compiled classpath entry per line")
+        .get());
     options.addOption(new Option("e", "error-file", true,
         "Write errors to file"));
     options.addOption(new Option("s", "skipclones", false,
@@ -119,13 +139,16 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         printHelp(formatter, command, options);
         System.exit(0);
       }
-      String workingDirectory = cmd.getOptionValue("directory");
+      Path workingDirectoryPath = validatedWorkingDirectory(cmd.getOptionValue("directory"));
+      String workingDirectory = workingDirectoryPath.toString();
       // TODO
       int folder = 13;
       //String workingDirectory = "/home/hanno/CodeCloner/BigCloneEval/ijadataset/bcb_reduced/" + folder;
       logger.info("Traversing working directory {} ...", workingDirectory);
       long start=System.nanoTime();
       SpoonBigCloneBenchDriver driver = new SpoonBigCloneBenchDriver(workingDirectory);
+      driver.setSourceRoots(validatedSourceRoots(cmd, workingDirectoryPath));
+      driver.setSourceClasspath(validatedSourceClasspath(cmd));
       driver.skipclones = cmd.hasOption("skipclones");
       driver.setErrors(cmd.hasOption("error-file"));
       driver.setOutput(cmd.hasOption("out"));
@@ -479,6 +502,14 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     this.skipclones=skipClones;
   }
 
+  void setSourceRoots(List<Path> sourceRoots) {
+    this.sourceRoots = List.copyOf(sourceRoots);
+  }
+
+  void setSourceClasspath(List<Path> sourceClasspath) {
+    this.sourceClasspath = sourceClasspath.stream().map(Path::toString).toArray(String[]::new);
+  }
+
   public List<List<Encoder>> extractGraphs(CtType type, Object m, String dir)
   {
 	
@@ -566,12 +597,21 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         Launcher myLauncher = new Launcher();
         myLauncher.getEnvironment().setComplianceLevel(25);
         myLauncher.getEnvironment().setIgnoreSyntaxErrors(false);
+        if (sourceClasspath.length == 0 || isModuleDescriptor(inputFile)) {
+          myLauncher.getEnvironment().setNoClasspath(true);
+        } else {
+          myLauncher.getEnvironment().setSourceClasspath(sourceClasspath);
+          myLauncher.getEnvironment().setNoClasspath(false);
+        }
         myLauncher.addInputResource(inputFile.toString());
         myLauncher.addProcessor(this);
-        myLauncher.buildModel();
+        CtModel model = myLauncher.buildModel();
         if (myLauncher.getEnvironment().getErrorCount() > 0) {
           throw new IllegalStateException(
               "Parser reported " + myLauncher.getEnvironment().getErrorCount() + " syntax errors");
+        }
+        if (sourceClasspath.length > 0 && !isModuleDescriptor(inputFile)) {
+          validateResolvedTypes(model);
         }
         myLauncher.process();
         successAST.incrementAndGet();
@@ -581,6 +621,20 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       totalFiles.incrementAndGet();
       currentFile.remove();
     }
+  }
+
+  private static void validateResolvedTypes(CtModel model) {
+    Optional<CtTypeReference<?>> unresolvedType = model
+        .getElements(new TypeFilter<CtTypeReference<?>>(CtTypeReference.class))
+        .stream()
+        .filter(reference -> !reference.isPrimitive())
+        .filter(reference -> !CtTypeReference.NULL_TYPE_NAME.equals(reference.getQualifiedName()))
+        .filter(reference -> reference.getTypeDeclaration() == null)
+        .findFirst();
+    unresolvedType.ifPresent(reference -> {
+      throw new IllegalStateException(
+          "Explicit classpath does not resolve type " + reference.getQualifiedName());
+    });
   }
 
   String methodID(CtType type, CtExecutable m) {
@@ -627,18 +681,157 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   }
 
   private void processSourceFiles() {
-    List<Path> sourceFiles;
-    try (Stream<Path> paths = Files.walk(Paths.get(workingDirectory))) {
-      sourceFiles = paths.filter(SpoonBigCloneBenchDriver::isJavaSource)
-          .collect(Collectors.toList());
-    } catch (IOException e) {
-      throw new UncheckedIOException("Unable to access " + workingDirectory, e);
+    SourceFilesByIdentity sourceFilesByIdentity = new SourceFilesByIdentity();
+    for (Path sourceRoot : sourceRoots) {
+      try (Stream<Path> paths = Files.walk(sourceRoot)) {
+        Iterator<Path> sourceFiles = paths.iterator();
+        while (sourceFiles.hasNext()) {
+          Path sourceFile = sourceFiles.next();
+          if (!isJavaSource(sourceFile)) {
+            continue;
+          }
+          try {
+            sourceFilesByIdentity.add(sourceFile.toRealPath(), sourceFile);
+          } catch (IOException e) {
+            throw new UncheckedIOException("Unable to resolve " + sourceFile, e);
+          }
+        }
+      } catch (IOException e) {
+        throw new UncheckedIOException("Unable to access " + sourceRoot, e);
+      }
     }
-    sourceFiles.parallelStream().forEach(this::process);
+    sourceFilesByIdentity.sortedSources().parallelStream().forEach(this::process);
   }
+
+  private static final class SourceFilesByIdentity {
+    private final Map<Object, List<SourceFile>> sourcesByFileKey = new HashMap<>();
+    private final Map<SourceFileFallbackKey, List<SourceFile>> sourcesWithoutFileKey =
+        new HashMap<>();
+
+    void add(Path realSource, Path selectedSource) throws IOException {
+      BasicFileAttributes attributes =
+          Files.readAttributes(realSource, BasicFileAttributes.class);
+      Object fileKey = attributes.fileKey();
+      List<SourceFile> candidates = fileKey != null
+          ? sourcesByFileKey.computeIfAbsent(fileKey, ignored -> new ArrayList<>())
+          : sourcesWithoutFileKey.computeIfAbsent(
+              new SourceFileFallbackKey(attributes.size(), attributes.lastModifiedTime()),
+              ignored -> new ArrayList<>());
+      for (int index = 0; index < candidates.size(); index++) {
+        SourceFile candidate = candidates.get(index);
+        if (Files.isSameFile(candidate.realSource(), realSource)) {
+          if (selectedSource.compareTo(candidate.selectedSource()) < 0) {
+            candidates.set(index, new SourceFile(realSource, selectedSource));
+          }
+          return;
+        }
+      }
+      candidates.add(new SourceFile(realSource, selectedSource));
+    }
+
+    List<Path> sortedSources() {
+      return Stream.concat(
+              sourcesByFileKey.values().stream(),
+              sourcesWithoutFileKey.values().stream())
+          .flatMap(Collection::stream)
+          .map(SourceFile::selectedSource)
+          .sorted()
+          .toList();
+    }
+  }
+
+  private record SourceFile(Path realSource, Path selectedSource) {}
+
+  private record SourceFileFallbackKey(long size, FileTime lastModifiedTime) {}
 
   private static boolean isJavaSource(Path path) {
     return Files.isRegularFile(path) && path.getFileName().toString().endsWith(".java");
+  }
+
+  private static boolean isModuleDescriptor(Path path) {
+    return path.getFileName().toString().equals("module-info.java");
+  }
+
+  private static Path validatedWorkingDirectory(String value) throws ParseException {
+    Path directory = Paths.get(value).normalize();
+    if (!Files.isDirectory(directory) || !Files.isReadable(directory)) {
+      throw new ParseException("Working directory is not a readable directory: " + value);
+    }
+    return directory;
+  }
+
+  private static List<Path> validatedSourceRoots(CommandLine command, Path workingDirectory)
+      throws ParseException {
+    String[] values = command.getOptionValues("source-root");
+    if (values == null || values.length == 0) {
+      return List.of(workingDirectory);
+    }
+
+    LinkedHashSet<Path> roots = new LinkedHashSet<>();
+    Path realWorkingDirectory;
+    try {
+      realWorkingDirectory = workingDirectory.toRealPath();
+    } catch (IOException e) {
+      throw new ParseException("Could not resolve working directory: " + workingDirectory);
+    }
+    for (String value : values) {
+      Path configured = Paths.get(value);
+      Path configuredSourceRoot = configured.isAbsolute()
+          ? configured.normalize()
+          : workingDirectory.resolve(configured).normalize();
+      if (!Files.isDirectory(configuredSourceRoot) || !Files.isReadable(configuredSourceRoot)) {
+        throw new ParseException("Source root is not a readable directory: " + value);
+      }
+      try {
+        Path realSourceRoot = configuredSourceRoot.toRealPath();
+        if (!realSourceRoot.startsWith(realWorkingDirectory)) {
+          throw new ParseException("Source root resolves outside the working directory: " + value);
+        }
+        roots.add(workingDirectory.resolve(realWorkingDirectory.relativize(realSourceRoot)).normalize());
+      } catch (IOException e) {
+        throw new ParseException("Could not resolve source root: " + value);
+      }
+    }
+    return List.copyOf(roots);
+  }
+
+  private static List<Path> validatedSourceClasspath(CommandLine command) throws ParseException {
+    String value = command.getOptionValue("classpath-file");
+    if (value == null) {
+      return List.of();
+    }
+
+    Path classpathFile = Paths.get(value).toAbsolutePath().normalize();
+    if (!Files.isRegularFile(classpathFile) || !Files.isReadable(classpathFile)) {
+      throw new ParseException("Classpath file is not a readable file: " + value);
+    }
+
+    LinkedHashSet<Path> entries = new LinkedHashSet<>();
+    try {
+      Path baseDirectory = classpathFile.getParent();
+      for (String line : Files.readAllLines(classpathFile, StandardCharsets.UTF_8)) {
+        if (line.isBlank()) {
+          continue;
+        }
+        Path configured = Paths.get(line);
+        Path entry = configured.isAbsolute()
+            ? configured.normalize()
+            : baseDirectory.resolve(configured).normalize();
+        if (!Files.isDirectory(entry) && !Files.isRegularFile(entry)) {
+          throw new ParseException("Classpath entry does not exist: " + line);
+        }
+        if (!Files.isReadable(entry)) {
+          throw new ParseException("Classpath entry is not readable: " + line);
+        }
+        entries.add(entry.toAbsolutePath());
+      }
+    } catch (IOException e) {
+      throw new ParseException("Could not read classpath file: " + value);
+    }
+    if (entries.isEmpty()) {
+      throw new ParseException("Classpath file contains no entries: " + value);
+    }
+    return List.copyOf(entries);
   }
 
   private void driverCloneOutput(String first, String second) {
