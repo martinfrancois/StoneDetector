@@ -72,6 +72,27 @@ For example, `test,Example.java,4,18,test,Example.java,19,33` denotes the clone 
 
 Clone output is sorted deterministically. If parsing, control-flow construction, or path encoding is incomplete, StoneDetector writes the available diagnostics to `--error-file`, emits no partial clone result, and exits with status 2.
 
+### Project classpaths and source sets
+
+By default, StoneDetector scans every Java file below `--directory` independently in Spoon's no-classpath mode. For a built project whose source needs project types to parse correctly, pass the compiled classpath explicitly instead of making StoneDetector invoke or guess a build system:
+
+```text
+java -jar build/libs/StoneDetector.jar \
+  --directory=/path/to/project \
+  --source-root=module/src/main/java \
+  --source-root=module/src/generated/java \
+  --classpath-file=/path/to/module.compile-classpath \
+  --error-file=errors.txt
+```
+
+`--source-root` is repeatable and selects the source directories for one source set; relative roots are resolved below `--directory`. Roots are resolved to their real filesystem location and must remain within the real working tree. When the option is omitted, StoneDetector scans `--directory` as before. Overlapping or aliased roots do not analyze the same file twice.
+
+`--classpath-file` is an optional UTF-8 file with one compiled classpath entry per nonblank line. Relative entries are resolved from the classpath file's directory. Entries must already exist as directories or files. StoneDetector passes them directly to Spoon and preserves per-file analysis; it does not run Maven, Gradle, `javac`, or dependency discovery. Include the source set's compiled output when its own compiled types are needed. Invoke StoneDetector separately for source sets or modules that require different classpaths.
+
+A classpath is not a Java module path. StoneDetector therefore parses `module-info.java` descriptors in no-classpath mode even when `--classpath-file` is present. Module descriptors remain syntax-checked and counted, but they contain no methods for clone extraction.
+
+Without `--classpath-file`, the existing no-classpath behavior remains available. In either mode, an incomplete parse or analysis remains a failure rather than producing partial clone output.
+
 ### Configuration
 
 The StoneDetector tool provides various configuration parameters, which allow you to play with its code clone detection capabilities. The tool's configuration parameters are defined in the file `config/default.properties`.
