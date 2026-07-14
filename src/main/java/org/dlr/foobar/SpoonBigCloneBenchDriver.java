@@ -21,6 +21,7 @@ import spoon.reflect.declaration.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.commons.cli.*;
+import org.apache.commons.cli.help.HelpFormatter;
 import spoon.support.reflect.declaration.CtConstructorImpl;
 import spoon.support.reflect.declaration.CtMethodImpl;
 import spoon.reflect.declaration.CtClass;
@@ -111,7 +112,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     // help option
     options.addOption(new Option("h", "help", false,
         "Print help"));
-    HelpFormatter formatter = new HelpFormatter();
+    HelpFormatter formatter = HelpFormatter.builder().setShowSince(false).get();
     String command = "./gradlew --args=\"--directory=dataset [--out=out_basedir]\"";
 
 
@@ -120,7 +121,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       CommandLineParser parser = new DefaultParser();
       CommandLine cmd = parser.parse(options, args);
       if (cmd.hasOption("help")) {
-        formatter.printHelp(command, options);
+        printHelp(formatter, command, options);
         System.exit(0);
       }
       String workingDirectory = cmd.getOptionValue("directory");
@@ -259,7 +260,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
                             .forEach(driver::process);
                 } catch (IOException e) {
                     System.out.println("ERROR: Unable to access " + workingDirectory);
-                    formatter.printHelp(command, options);
+                    printHelp(formatter, command, options);
                     System.exit(1);
                 }
             }).get();
@@ -317,7 +318,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       
     } catch (ParseException e) {
       System.out.println(e.getMessage());
-      formatter.printHelp(command, options);
+      printHelp(formatter, command, options);
       System.exit(1);
     } catch (InterruptedException | ExecutionException e) {
       e.printStackTrace();
@@ -633,6 +634,14 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
           fw.close();
       }
       catch (IOException ignored) {}
+  }
+
+  private static void printHelp(HelpFormatter formatter, String command, Options options) {
+    try {
+      formatter.printHelp(command, null, options, null, false);
+    } catch (IOException e) {
+      logger.error("Could not print command help", e);
+    }
   }
 
   void reportErrors(Throwable e) {

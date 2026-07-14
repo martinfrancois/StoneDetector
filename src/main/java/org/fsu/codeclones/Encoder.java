@@ -61,6 +61,7 @@ public abstract class Encoder<T>{
 	ht.put("class spoon.support.reflect.code.CtJavaDocTagImpl",30);
 	ht.put("class spoon.support.reflect.code.CtLambdaImpl",31);
 	ht.put("class spoon.support.reflect.code.CtLiteralImpl",32);
+	ht.put("class spoon.support.reflect.code.CtTextBlockImpl",32);
 	ht.put("class spoon.support.reflect.code.CtLocalVariableImpl",33);
 	ht.put("class spoon.support.reflect.code.CtLoopImpl",34);
 	ht.put("class spoon.support.reflect.code.CtNewArrayImpl",35);
