@@ -4,11 +4,11 @@ If you just want to try out StoneDetector, you can also have a look at the tool'
 
 ## StoneDetector Quick Start
 * Adjust StoneDetector's configuration file under `config/default.properties`
-* Build StoneDetector using gradle (requires at least JDK11)
+* Build StoneDetector using the Gradle wrapper (requires at least JDK 17)
 ```
 ./gradlew jar
 ```
-* Run StoneDetector (requires at least JRE11)
+* Run StoneDetector (requires at least JRE 17)
 ```
 java -Xms8G -Xmx8G -jar build/libs/StoneDetector.jar -x --directory="path/to/Java/Folder" --error-file=errors.txt 
 ```
@@ -91,7 +91,11 @@ The StoneDetector tool provides various configuration parameters, which allow yo
 
 ### Building
 
-StoneDetector is written in Java and can be built using [Gradle](https://gradle.org). StoneDetector requires at least Java 11. We recommend using StoneDetector with Java JDK11 and Gradle 6.3.0. To build the tool, simply run:
+StoneDetector is written in Java and can be built using the included [Gradle](https://gradle.org) wrapper. StoneDetector requires at least Java 17. Raising the minimum from Java 11 to Java 17 is a breaking compatibility change required by the maintained parser and build toolchain.
+
+Source analysis uses Java 25 language compliance. The end-to-end regression suite covers modern syntax through Java 25, including records and sealed types, text blocks, pattern matching and guarded switch expressions, record and unnamed patterns, module imports, compact source files, flexible constructor bodies, Markdown documentation comments, and primitive patterns. Support means that these sources complete StoneDetector's AST, control-flow, dominator-tree, and path-encoding pipeline; clone encodings continue to normalize syntax according to StoneDetector's structural model rather than preserving every source-level distinction.
+
+To build the tool, run:
 ```
 ./gradlew jar
 ```
