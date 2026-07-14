@@ -36,7 +36,9 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.EnumSet;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 // TODO: add time to logging ...
 
@@ -47,21 +49,21 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     public static int pathExtractionMode = 1;
     public static boolean encodeAsInRegistercode = false;
 
-    static String outputString = "";
     static String outputFileName = "/home/hanno/CodeCloner/dominator4java/SPOON/resultFiles/analysize/";
 
-    static int countClones = 0;
-
   static Object monitorAddPaths = new Object();
-  static Object monitorOutput = new Object();
-
   final static Logger logger =
       LoggerFactory.getLogger(SpoonBigCloneBenchDriver.class);
 
    
-  private int successAST, successCFG, successDom, totalMethods,
-      totalFiles, successPath;
-  private StringBuilder errorLog;
+  private final AtomicInteger successAST = new AtomicInteger();
+  private final AtomicInteger successCFG = new AtomicInteger();
+  private final AtomicInteger successDom = new AtomicInteger();
+  private final AtomicInteger totalMethods = new AtomicInteger();
+  private final AtomicInteger totalFiles = new AtomicInteger();
+  private final AtomicInteger successPath = new AtomicInteger();
+  private final Queue<AnalysisFailure> analysisFailures = new ConcurrentLinkedQueue<>();
+  private final Queue<String> cloneOutput = new ConcurrentLinkedQueue<>();
   private boolean errors, output, skipclones, exceptions;
   public static boolean bytecode=false;
     
@@ -73,13 +75,6 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   private MethodTuple[] outputTuplesArray;
 
   public SpoonBigCloneBenchDriver(String workingDirectory) {
-    errorLog = new StringBuilder();
-    totalMethods = 0;
-    totalFiles = 0;
-    successPath = 0;
-    successAST = 0;
-    successCFG = 0;
-    successDom = 0;
     this.workingDirectory = workingDirectory;
   }
 
@@ -251,77 +246,72 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
             // traversing the benchmark directory and calling the Spoon driver
 
             ForkJoinPool myPool = new ForkJoinPool(poolSize);
-            myPool.submit(() -> {
-                try {
-                    Files.walk(Paths.get(workingDirectory))
-                            .collect(Collectors.toList())
-                            .parallelStream()
-                            .filter(Files::isRegularFile)
-                            .forEach(driver::process);
-                } catch (IOException e) {
-                    System.out.println("ERROR: Unable to access " + workingDirectory);
-                    printHelp(formatter, command, options);
-                    System.exit(1);
-                }
-            }).get();
+            try {
+              myPool.submit(driver::processSourceFiles).get();
+            } finally {
+              myPool.shutdown();
+            }
 
       // logging
       logger.info("Successfully created AST for {} out of {} files",
-          driver.successAST, driver.totalFiles);
+          driver.successAST.get(), driver.totalFiles.get());
       logger.info("Successfully created CFG for {} out of {} methods",
-          driver.successCFG, driver.totalMethods);
+          driver.successCFG.get(), driver.totalMethods.get());
       logger.info("Successfully created DomTree for {} out of {} methods",
-          driver.successDom, driver.totalMethods);
+          driver.successDom.get(), driver.totalMethods.get());
       logger.info("Successfully encoded paths for {} out of {} methods",
-          driver.successPath, driver.totalMethods);
+          driver.successPath.get(), driver.totalMethods.get());
       }
       long end1=System.nanoTime();
+
+      if (driver.errors) {
+        driver.logErrors(cmd.getOptionValue("error-file"));
+      }
+      int analysisExitCode = driver.analysisExitCode();
+      if (analysisExitCode != 0) {
+        logger.error("Analysis incomplete: {} source or method failures", driver.analysisFailures.size());
+        System.exit(analysisExitCode);
+      }
 
       if (!driver.skipclones) {
         driver.outputTuplesArray= SpoonBigCloneBenchDriver.outputTuples.toArray(new MethodTuple[SpoonBigCloneBenchDriver.outputTuples.size()]);
 
         ThreadPoolExecutor executor =(ThreadPoolExecutor) Executors.newFixedThreadPool(poolSize);
-        for (int i =0;i<poolSize;i++)
-        {
-          int finalI1 = i;
-          executor.submit(() -> {
-            driver.detectClones(finalI1,poolSize);
-            return null;
-          });
-        }
-        executor.shutdown();
+        List<Future<?>> cloneTasks = new ArrayList<>();
         try {
-          executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
-        } catch (InterruptedException e) {
+          for (int i = 0; i < poolSize; i++) {
+            int taskStart = i;
+            cloneTasks.add(executor.submit(() -> driver.detectClones(taskStart, poolSize)));
+          }
+          for (Future<?> cloneTask : cloneTasks) {
+            cloneTask.get();
+          }
+        } finally {
+          executor.shutdownNow();
+        }
+        try {
+          driver.writeCloneOutput();
+        } catch (IOException e) {
+          logger.error("Could not write clone output", e);
+          System.exit(1);
         }
       }
       long end2=System.nanoTime();
       logger.info("Time create pathes= "+TimeUnit.MILLISECONDS.convert(end1-start, TimeUnit.NANOSECONDS));
       logger.info("Time find clones= "+TimeUnit.MILLISECONDS.convert(end2-end1, TimeUnit.NANOSECONDS));
 
-      logger.info("--- Numbers of Clones: " + countClones);
-
-      if (saveOutput){
-          logger.info("Write Result to File " + outputFileName + "...");
-          try {
-              PrintWriter writer = new PrintWriter(outputFileName);
-              writer.print(outputString);
-              writer.close();
-          } catch (IOException e) {
-              e.printStackTrace();
-          }
-      }
-      // write errors
-      if (driver.errors) {
-        driver.logErrors(cmd.getOptionValue("error-file"));
-      }
-      
+      logger.info("--- Numbers of Clones: " + driver.cloneOutput.size());
     } catch (ParseException e) {
       System.out.println(e.getMessage());
       printHelp(formatter, command, options);
       System.exit(1);
-    } catch (InterruptedException | ExecutionException e) {
-      e.printStackTrace();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      logger.error("Analysis interrupted", e);
+      System.exit(1);
+    } catch (ExecutionException e) {
+      logger.error("Analysis failed", e.getCause());
+      System.exit(1);
     }
   }
 
@@ -394,18 +384,8 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
                                 .append(",")
                                 .append(cf_2.info.endLine);
                        String part2=builder.toString();
-                       builder = new StringBuilder();
                        if (!part1.equals(part2)) {
-                           builder.append(part1)
-                                   .append(",")
-                                   .append(part2);
-
-                           synchronized (monitorOutput) {
-                              String outp = builder.toString();
-                              countClones += 1;
-                              System.out.println(outp);
-                               if (saveOutput) { outputString = outputString.concat(outp + "\n"); }
-                           }
+                           driverCloneOutput(part1, part2);
                        }
                   }
               }
@@ -430,7 +410,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
                   tmpList.add(new MethodTuple((CtExecutable) m,l,SpoonBigCloneBenchDriver.currentFile.get()));
               }
           } catch (Throwable e) {
-              if (errors) { reportErrors(e); }
+              reportAnalysisFailure(e);
           }
       }
       if (!skipclones && pathExtractionMode != 1) {
@@ -529,7 +509,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       // cf. https://spoon.gforge.inria.fr
       String cfg_name = methodID(type, (CtExecutable) m) + "_cfg";
       ControlFlowGraph cfg = makeCFG((CtExecutable) m, cfg_name);
-      successCFG++;
+      successCFG.incrementAndGet();
 
         // write the cfg and the domtree
         if (config.getBoolean("createCFGGraph")){
@@ -548,14 +528,14 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
             writeToPath(resultDirectory + "/" + domtree_name + ".dot", domtree.toGraphVisText());
         }
 
-      successDom++;
+      successDom.incrementAndGet();
       String encodePathSet_name = methodID(type, (CtExecutable) m) + "_encodePathSet";
 
       //System.out.println("Dom Tree created");
       //!!!!!!System.out.println(cfg);!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
       List<List<Encoder>> encodePathSet = domtree.encodePathSet(Environment.PATHSINSETS, Environment.TECHNIQUE, Environment.SETORDER);
 
-      successPath++;
+      successPath.incrementAndGet();
 
       if (!skipclones && pathExtractionMode == 1) {
         synchronized (monitorAddPaths) {
@@ -569,10 +549,9 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       return encodePathSet;
 
     } catch (Throwable e) {
-      if (errors)
-        reportErrors(e);
+      reportAnalysisFailure(e);
     } finally {
-      totalMethods++;
+      totalMethods.incrementAndGet();
     }
     return null;
   }
@@ -585,18 +564,22 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         // configuring the Spoon library to read from file inputFile
         // cf. https://spoon.gforge.inria.fr/
         Launcher myLauncher = new Launcher();
+        myLauncher.getEnvironment().setComplianceLevel(25);
+        myLauncher.getEnvironment().setIgnoreSyntaxErrors(false);
         myLauncher.addInputResource(inputFile.toString());
-
         myLauncher.addProcessor(this);
         myLauncher.buildModel();
+        if (myLauncher.getEnvironment().getErrorCount() > 0) {
+          throw new IllegalStateException(
+              "Parser reported " + myLauncher.getEnvironment().getErrorCount() + " syntax errors");
+        }
         myLauncher.process();
-
-        successAST++;
+        successAST.incrementAndGet();
     } catch (Throwable e) {
-      if (errors)
-        reportErrors(e);
+      reportAnalysisFailure(e);
     } finally {
-      totalFiles++;
+      totalFiles.incrementAndGet();
+      currentFile.remove();
     }
   }
 
@@ -636,6 +619,36 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       catch (IOException ignored) {}
   }
 
+  void reportAnalysisFailure(Throwable e) {
+    Path source = currentFile.get();
+    analysisFailures.add(new AnalysisFailure(
+        source == null ? "<unknown>" : source.toString(),
+        ExceptionUtils.getStackTrace(e)));
+  }
+
+  private void processSourceFiles() {
+    List<Path> sourceFiles;
+    try (Stream<Path> paths = Files.walk(Paths.get(workingDirectory))) {
+      sourceFiles = paths.filter(SpoonBigCloneBenchDriver::isJavaSource)
+          .collect(Collectors.toList());
+    } catch (IOException e) {
+      throw new UncheckedIOException("Unable to access " + workingDirectory, e);
+    }
+    sourceFiles.parallelStream().forEach(this::process);
+  }
+
+  private static boolean isJavaSource(Path path) {
+    return Files.isRegularFile(path) && path.getFileName().toString().endsWith(".java");
+  }
+
+  private void driverCloneOutput(String first, String second) {
+    if (first.compareTo(second) <= 0) {
+      cloneOutput.add(first + "," + second);
+    } else {
+      cloneOutput.add(second + "," + first);
+    }
+  }
+
   private static void printHelp(HelpFormatter formatter, String command, Options options) {
     try {
       formatter.printHelp(command, null, options, null, false);
@@ -644,21 +657,36 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     }
   }
 
-  void reportErrors(Throwable e) {
-    errorLog.append(currentFile.get().toString());
-    errorLog.append(":\n");
-    errorLog.append(ExceptionUtils.getStackTrace(e));
-    errorLog.append("\n");
+  private void writeCloneOutput() throws IOException {
+    List<String> orderedOutput = cloneOutput.stream().sorted().collect(Collectors.toList());
+    for (String clone : orderedOutput) {
+      System.out.println(clone);
+    }
+    if (saveOutput) {
+      logger.info("Write Result to File {} ...", outputFileName);
+      Files.write(Paths.get(outputFileName), orderedOutput, StandardCharsets.UTF_8);
+    }
+  }
+
+  int analysisExitCode() {
+    return analysisFailures.isEmpty() ? 0 : 2;
   }
 
   void logErrors(String errorFile) {
     try {
       Path file = Paths.get(errorFile);
-      Files.write(file, Collections.singleton(errorLog.toString()), StandardCharsets.UTF_8);
+      String failures = analysisFailures.stream()
+          .sorted(Comparator.comparing(AnalysisFailure::source)
+              .thenComparing(AnalysisFailure::stackTrace))
+          .map(failure -> failure.source() + ":\n" + failure.stackTrace() + "\n")
+          .collect(Collectors.joining());
+      Files.writeString(file, failures, StandardCharsets.UTF_8);
     } catch (IOException e) {
       logger.warn("Could not write error file {}", errorFile);
     }
   }
+
+  private record AnalysisFailure(String source, String stackTrace) {}
 
   String convertToOutputDirectory(Path source) {
     // converts the dataset source path into a directory within the output basedir
