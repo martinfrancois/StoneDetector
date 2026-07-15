@@ -146,6 +146,239 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void missingDefaultConfigurationFailsOnceBeforeSourceAnalysis() throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("missing-config"));
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+        assertConfigurationFailure(result, workingDirectory, errors);
+    }
+
+    @Test
+    void unreadableDefaultConfigurationFailsOnceBeforeSourceAnalysis() throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("unreadable-config"));
+        Files.createDirectories(workingDirectory.resolve("config/default.properties"));
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+        assertConfigurationFailure(result, workingDirectory, errors);
+    }
+
+    @Test
+    void malformedDefaultConfigurationFailsOnceBeforeSourceAnalysis() throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("malformed-config"));
+        Path configDirectory = Files.createDirectory(workingDirectory.resolve("config"));
+        String malformedConfiguration = Files.readString(Path.of("config/default.properties"))
+                .replace("THREADSIZE=3", "THREADSIZE=not-a-number");
+        Files.writeString(
+                configDirectory.resolve("default.properties"),
+                malformedConfiguration,
+                StandardCharsets.UTF_8);
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+        assertConfigurationFailure(result, workingDirectory, errors);
+    }
+
+    @Test
+    void defaultConfigurationWithMissingRequiredKeyFailsOnceBeforeSourceAnalysis()
+            throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("missing-key-config"));
+        Path configDirectory = Files.createDirectory(workingDirectory.resolve("config"));
+        String incompleteConfiguration = Files.readString(Path.of("config/default.properties"))
+                .replaceFirst("(?m)^METRIC=LCS\\R?", "");
+        Files.writeString(
+                configDirectory.resolve("default.properties"),
+                incompleteConfiguration,
+                StandardCharsets.UTF_8);
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+        assertConfigurationFailure(result, workingDirectory, errors);
+    }
+
+    @Test
+    void defaultConfigurationWithCyclicInterpolationFailsOnceBeforeSourceAnalysis()
+            throws Exception {
+        Path workingDirectory =
+                Files.createDirectory(temporaryDirectory.resolve("cyclic-interpolation-config"));
+        Path configDirectory = Files.createDirectory(workingDirectory.resolve("config"));
+        String cyclicConfiguration = Files.readString(Path.of("config/default.properties"))
+                .replace("METRIC=LCS", "METRIC=${METRIC}");
+        Files.writeString(
+                configDirectory.resolve("default.properties"),
+                cyclicConfiguration,
+                StandardCharsets.UTF_8);
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+        assertConfigurationFailure(result, workingDirectory, errors);
+    }
+
+    @Test
+    void selectedPatternConfigurationsFailOnceBeforeAnalysis() throws Exception {
+        for (PatternConfiguration pattern : patternConfigurations()) {
+            for (PatternFailure failure : PatternFailure.values()) {
+                Path workingDirectory = Files.createDirectory(
+                        temporaryDirectory.resolve(pattern.name() + "-" + failure.name().toLowerCase()));
+                writeDefaultConfiguration(workingDirectory, pattern);
+                writePatternConfiguration(workingDirectory, pattern, failure);
+                Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+                Path errors = workingDirectory.resolve("errors.txt");
+
+                ProcessResult result = runStoneFromWorkingDirectory(
+                        workingDirectory, sources, errors, "--skipclones");
+
+                assertPatternConfigurationFailure(
+                        result, workingDirectory, errors, pattern.relativePath());
+            }
+        }
+    }
+
+    @Test
+    void selectedPatternConfigurationsPreserveValidEmptyAnalysis() throws Exception {
+        for (PatternConfiguration pattern : patternConfigurations()) {
+            Path workingDirectory =
+                    Files.createDirectory(temporaryDirectory.resolve(pattern.name() + "-valid"));
+            writeDefaultConfiguration(workingDirectory, pattern);
+            writePatternConfiguration(workingDirectory, pattern, null);
+            Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+            Path errors = workingDirectory.resolve("errors.txt");
+
+            ProcessResult result =
+                    runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+            assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+            assertFalse(result.stderr().contains("Could not load configuration"), result.stderr());
+            assertTrue(Files.readString(errors).isEmpty());
+        }
+    }
+
+    @Test
+    void commandValidationPrecedesSelectedPatternConfigurationLoading() throws Exception {
+        PatternConfiguration pattern = patternConfigurations().get(0);
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("command-before-config"));
+        writeDefaultConfiguration(workingDirectory, pattern);
+        Path missingSources = workingDirectory.resolve("missing-sources");
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, missingSources, errors, "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(
+                result.stdout().contains("Working directory is not a readable directory"),
+                result.stdout());
+        assertFalse(result.stderr().contains("Could not load configuration"), result.stderr());
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void commandValidationPrecedesDefaultConfigurationLoading() throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("command-before-default"));
+        Path missingSources = workingDirectory.resolve("missing-sources");
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result =
+                runStoneFromWorkingDirectory(workingDirectory, missingSources, errors, "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(
+                result.stdout().contains("Working directory is not a readable directory"),
+                result.stdout());
+        assertFalse(result.stderr().contains("Could not load configuration"), result.stderr());
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void explicitThreadValidationPrecedesDefaultConfigurationLoading() throws Exception {
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("threads-before-default"));
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result = runStoneFromWorkingDirectory(
+                workingDirectory, sources, errors, "--analysis-threads=not-a-number", "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(
+                result.stdout().contains("Analysis thread count is not a positive integer"),
+                result.stdout());
+        assertFalse(result.stderr().contains("Could not load configuration"), result.stderr());
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void configuredThreadCountRetainsPositiveValidation() throws Exception {
+        PatternConfiguration pattern = patternConfigurations().get(0);
+        for (String configuredThreads : List.of("0", "-1")) {
+            Path workingDirectory = Files.createDirectory(
+                    temporaryDirectory.resolve("configured-threads-" + configuredThreads.replace('-', 'n')));
+            writeDefaultConfiguration(workingDirectory, pattern);
+            Path defaultConfiguration = workingDirectory.resolve("config/default.properties");
+            Files.writeString(
+                    defaultConfiguration,
+                    Files.readString(defaultConfiguration)
+                            .replace("THREADSIZE=3", "THREADSIZE=" + configuredThreads),
+                    StandardCharsets.UTF_8);
+            writePatternConfiguration(workingDirectory, pattern, null);
+            Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+            Path errors = workingDirectory.resolve("errors.txt");
+
+            ProcessResult result =
+                    runStoneFromWorkingDirectory(workingDirectory, sources, errors, "--skipclones");
+
+            assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+            assertTrue(
+                    result.stdout().contains(
+                            "Analysis thread count is not a positive integer: " + configuredThreads),
+                    result.stdout());
+            assertFalse(result.stderr().contains("Exception"), result.stderr());
+            assertFalse(Files.exists(errors));
+        }
+    }
+
+    @Test
+    void explicitThreadSelectionSuppressesInvalidConfiguredDefault() throws Exception {
+        PatternConfiguration pattern = patternConfigurations().get(0);
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("explicit-threads"));
+        writeDefaultConfiguration(workingDirectory, pattern);
+        Path defaultConfiguration = workingDirectory.resolve("config/default.properties");
+        Files.writeString(
+                defaultConfiguration,
+                Files.readString(defaultConfiguration).replace("THREADSIZE=3", "THREADSIZE=0"),
+                StandardCharsets.UTF_8);
+        writePatternConfiguration(workingDirectory, pattern, null);
+        Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result = runStoneFromWorkingDirectory(
+                workingDirectory, sources, errors, "--analysis-threads=1", "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
     void sourceExecutorPropagatesUnexpectedWorkerFailure() {
         IllegalStateException failure = new IllegalStateException("source failed");
 
@@ -448,6 +681,16 @@ class AnalysisCompletenessTest {
 
     private ProcessResult runStone(Path sources, Path errors, String... additionalArguments)
             throws IOException, InterruptedException {
+        return runStoneFromWorkingDirectory(
+                Path.of("").toAbsolutePath(), sources, errors, additionalArguments);
+    }
+
+    private ProcessResult runStoneFromWorkingDirectory(
+            Path workingDirectory,
+            Path sources,
+            Path errors,
+            String... additionalArguments)
+            throws IOException, InterruptedException {
         List<String> command = new ArrayList<>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("-cp");
@@ -458,11 +701,98 @@ class AnalysisCompletenessTest {
         command.addAll(List.of(additionalArguments));
 
         Process process = new ProcessBuilder(command)
-                .directory(Path.of("").toAbsolutePath().toFile())
+                .directory(workingDirectory.toFile())
                 .start();
         String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
         return new ProcessResult(process.waitFor(), stdout, stderr);
+    }
+
+    private static void assertConfigurationFailure(
+            ProcessResult result, Path workingDirectory, Path errors) {
+        String diagnostic = "Could not load configuration: config/default.properties";
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        List<String> stderrLines = result.stderr().lines().toList();
+        assertEquals(1, stderrLines.size(), result.stderr());
+        assertTrue(stderrLines.get(0).endsWith(diagnostic), result.stderr());
+        assertFalse(result.stderr().contains("ConfigurationException"), result.stderr());
+        assertFalse(result.stderr().contains("NullPointerException"), result.stderr());
+        assertFalse(result.stderr().contains(workingDirectory.toString()), result.stderr());
+        assertFalse(result.stderr().contains("Parsing Java source file"), result.stderr());
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertFalse(Files.exists(errors));
+    }
+
+    private static void assertPatternConfigurationFailure(
+            ProcessResult result, Path workingDirectory, Path errors, String relativePath) {
+        String diagnostic = "Could not load configuration: " + relativePath;
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        List<String> stderrLines = result.stderr().lines().toList();
+        assertEquals(1, stderrLines.size(), result.stderr());
+        assertTrue(stderrLines.get(0).endsWith(diagnostic), result.stderr());
+        assertFalse(result.stderr().contains("Exception"), result.stderr());
+        assertFalse(result.stderr().contains(workingDirectory.toString()), result.stderr());
+        assertFalse(result.stderr().contains("Analyzing Java sources"), result.stderr());
+        assertFalse(result.stderr().contains("Parsing Java source file"), result.stderr());
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertFalse(Files.exists(errors));
+    }
+
+    private static void writeDefaultConfiguration(
+            Path workingDirectory, PatternConfiguration pattern) throws IOException {
+        Path configDirectory = Files.createDirectory(workingDirectory.resolve("config"));
+        String configuration = Files.readString(Path.of("config/default.properties"));
+        if (pattern.bytecode()) {
+            configuration = configuration
+                    .replace(
+                            "BYTECODEBASEDCLONEDETECTION=false",
+                            "BYTECODEBASEDCLONEDETECTION=true")
+                    .replace(
+                            "REGISTERCODE_STACKCODE=true",
+                            "REGISTERCODE_STACKCODE=" + pattern.registerCode());
+        }
+        Files.writeString(
+                configDirectory.resolve("default.properties"),
+                configuration,
+                StandardCharsets.UTF_8);
+    }
+
+    private static void writePatternConfiguration(
+            Path workingDirectory, PatternConfiguration pattern, PatternFailure failure)
+            throws IOException {
+        Path destination = workingDirectory.resolve(pattern.relativePath());
+        Files.createDirectories(destination.getParent());
+        if (failure == PatternFailure.MISSING) {
+            return;
+        }
+        if (failure == PatternFailure.UNREADABLE) {
+            Files.createDirectory(destination);
+            return;
+        }
+
+        String configuration = Files.readString(Path.of(pattern.relativePath()));
+        if (failure == PatternFailure.MALFORMED) {
+            configuration = configuration.replaceFirst(
+                    "(?m)^pathExtractionMode\\s*=.*$", "pathExtractionMode=not-a-number");
+        } else if (failure == PatternFailure.INCOMPLETE) {
+            configuration = configuration.replaceFirst(
+                    "(?m)^removeSimilarPaths\\s*=.*\\R?", "");
+        } else if (failure == PatternFailure.INTERPOLATION) {
+            configuration = configuration.replaceFirst(
+                    "(?m)^pathExtractionMode\\s*=.*$",
+                    "pathExtractionMode=\\${pathExtractionMode}");
+        }
+        Files.writeString(destination, configuration, StandardCharsets.UTF_8);
+    }
+
+    private static List<PatternConfiguration> patternConfigurations() {
+        return List.of(
+                new PatternConfiguration(
+                        "source", "config/Patterns/ConfigSourceCodePatterns", false, false),
+                new PatternConfiguration(
+                        "register", "config/Patterns/ConfigRegisterCodePatterns", true, true),
+                new PatternConfiguration(
+                        "bytecode", "config/Patterns/ConfigByteCodePatterns", true, false));
     }
 
     private void assertManifestRejected(Path project, String contents, String expectedMessage)
@@ -690,4 +1020,15 @@ class AnalysisCompletenessTest {
     private record ProcessResult(int exitCode, String stdout, String stderr) {}
 
     private record FeatureSource(String fileName, String source) {}
+
+    private record PatternConfiguration(
+            String name, String relativePath, boolean bytecode, boolean registerCode) {}
+
+    private enum PatternFailure {
+        MISSING,
+        UNREADABLE,
+        MALFORMED,
+        INCOMPLETE,
+        INTERPOLATION
+    }
 }
