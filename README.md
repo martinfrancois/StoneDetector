@@ -79,13 +79,14 @@ By default, StoneDetector scans every Java file below `--directory` independentl
 ```text
 java -jar build/libs/StoneDetector.jar \
   --directory=/path/to/project \
-  --source-root=module/src/main/java \
-  --source-root=module/src/generated/java \
+  --source-file-list=/path/to/module.sources \
   --classpath-file=/path/to/module.compile-classpath \
   --error-file=errors.txt
 ```
 
 `--source-root` is repeatable and selects the source directories for one source set; relative roots are resolved below `--directory`. Roots are resolved to their real filesystem location and must remain within the real working tree. When the option is omitted, StoneDetector scans `--directory` as before. Overlapping or aliased roots do not analyze the same file twice.
+
+`--source-file-list` is an optional UTF-8 manifest containing one Java source per nonblank line. It is an authoritative alternative to recursive `--source-root` discovery and cannot be combined with `--source-root`. Relative entries are resolved below `--directory`; absolute entries are accepted only when their real paths remain within that working tree. StoneDetector validates the complete manifest before analysis, rejects missing, unreadable, non-Java, malformed, or escaping entries, deduplicates aliases by real file identity, and analyzes the selected files in deterministic normalized order. This lets build tools provide an exact source set without teaching StoneDetector about a build system or forcing intentionally invalid compiler fixtures into clone analysis.
 
 `--classpath-file` is an optional UTF-8 file with one compiled classpath entry per nonblank line. Relative entries are resolved from the classpath file's directory. Entries must already exist as directories or files. StoneDetector passes them directly to Spoon and preserves per-file analysis; it does not run Maven, Gradle, `javac`, or dependency discovery. Include the source set's compiled output when its own compiled types are needed. Invoke StoneDetector separately for source sets or modules that require different classpaths.
 
