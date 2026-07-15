@@ -11,6 +11,7 @@ import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.configuration2.builder.FileBasedConfigurationBuilder;
 import org.apache.commons.configuration2.builder.fluent.Parameters;
 import org.apache.commons.configuration2.ex.ConfigurationException;
+import org.apache.commons.configuration2.ex.ConversionException;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.fsu.bytecode.ByteCodePathExtraction;
 import org.fsu.bytecode.HashEncoderRegisterCode;
@@ -49,7 +50,7 @@ import java.util.stream.Stream;
 public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     static boolean saveOutput = false;
 
-    static FileBasedConfiguration config = null;
+    static FileBasedConfiguration config;
     public static int pathExtractionMode = 1;
     public static boolean encodeAsInRegistercode = false;
 
@@ -151,13 +152,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         printHelp(formatter, command, options);
         System.exit(0);
       }
+
       Path workingDirectoryPath = validatedWorkingDirectory(cmd.getOptionValue("directory"));
       String workingDirectory = workingDirectoryPath.toString();
       // TODO
       int folder = 13;
       //String workingDirectory = "/home/hanno/CodeCloner/BigCloneEval/ijadataset/bcb_reduced/" + folder;
-      logger.info("Traversing working directory {} ...", workingDirectory);
-      long start=System.nanoTime();
       SpoonBigCloneBenchDriver driver = new SpoonBigCloneBenchDriver(workingDirectory);
       List<Path> sourceFiles = validatedSourceFiles(cmd, workingDirectoryPath);
       if (sourceFiles.isEmpty()) {
@@ -172,75 +172,38 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       driver.exceptions = cmd.hasOption("exceptions");
       if (cmd.hasOption("out"))
         driver.setOutputDir(cmd.getOptionValue("out"));
+      OptionalInt explicitAnalysisThreads = validatedExplicitAnalysisThreads(cmd);
 
-        FileBasedConfiguration configuration = null;
-        String configFileName="config/default.properties";
-        Parameters params = new Parameters();
-        FileBasedConfigurationBuilder<FileBasedConfiguration> builder =
-                new FileBasedConfigurationBuilder<FileBasedConfiguration>(PropertiesConfiguration.class)
-                        .configure(params.properties()
-                                .setFileName(configFileName));
-        try {
-            configuration = builder.getConfiguration();
-        } catch (ConfigurationException e) {
-            e.printStackTrace();
-        }
-        try {
-            Environment.THREADSIZE = configuration.getInt("THREADSIZE");
-            Environment.METRIC = configuration.getString("METRIC").equals("NW") ? MetricKind.NW : configuration.getString("METRIC").equals("LEVENSHTEIN") ? MetricKind.LEVENSHTEIN : MetricKind.LCS;
-            Environment.PATHSINSETS = configuration.getBoolean("SPLITTING") ? EncoderKind.SPLITTING : EncoderKind.UNSPLITTING;
-            Environment.TECHNIQUE = configuration.getBoolean("USEHASH") ? EncoderKind.HASH : EncoderKind.COMPLETEPATH;
-            Environment.MD5 = configuration.getBoolean("USEMD5");
-            Environment.THRESHOLD = configuration.getFloat("THRESHOLD");
-            Environment.MINSIZE = configuration.getInt("MINFUNCTIONSIZE");
-            Environment.SUPPORTCALLNAMES = configuration.getBoolean("USEFUNCTIONNAMES");
-            Environment.WIDTHUPPERFAKTOR = configuration.getFloat("UPPERFACTOR");
-            Environment.MINNODESNO = configuration.getBoolean("SPLITTING") ? 1 : 3;
-            Environment.OUTPUT = configuration.getBoolean("OUTPUT");
-            Environment.BYTECODEBASED= configuration.getBoolean("BYTECODEBASEDCLONEDETECTION");
-            Environment.USEREGISTERCODE= configuration.getBoolean("REGISTERCODE_STACKCODE");
-            Environment.STUBBERPROCESSING=configuration.getBoolean("STUBBERPROCESSING");
-            if ( Environment.BYTECODEBASED && Environment.USEREGISTERCODE)
-            {
-                Environment.BREMOVESMALLPATHES =0.4f;
-                Environment.BPATHESDIFF =0.3f;
-                Environment.WIDTHLOWERNO=5;
-                //Environment.WIDTHUPPERFAKTOR=1.5F;
-                Environment.MINNODESNO=3;
-                Environment.MAXDIFFNODESNO=7;
-            }
-            else {
-                Environment.BREMOVESMALLPATHES =0.3f;
-                Environment.BPATHESDIFF =0.3f;
-                //Environment.THRESHOLD=0.15F;
-                Environment.WIDTHLOWERNO=3;
-                //Environment.WIDTHUPPERFAKTOR=1.3F;
-
-
-            }
-
-        }catch (NoSuchElementException ex)
-        {
-            ex.printStackTrace();
-        }
+      String configFileName="config/default.properties";
+      FileBasedConfiguration configuration;
+      try {
+        configuration = loadConfiguration(configFileName);
+        configureEnvironment(configuration);
+      } catch (ConfigurationException | ConversionException | IllegalStateException
+          | NoSuchElementException exception) {
+        logger.error("Could not load configuration: {}", configFileName);
+        System.exit(1);
+        return;
+      }
 
       int poolSize=Environment.THREADSIZE;
-      int analysisThreads = validatedAnalysisThreads(cmd, poolSize);
+      int analysisThreads = selectedAnalysisThreads(explicitAnalysisThreads, poolSize);
+
+      configFileName = selectedPatternConfigurationFile();
+      try {
+        config = loadAndValidatePatternConfiguration(configFileName);
+      } catch (ConfigurationException | ConversionException | IllegalStateException
+          | NoSuchElementException exception) {
+        logger.error("Could not load configuration: {}", configFileName);
+        System.exit(1);
+        return;
+      }
+
+      logger.info("Traversing working directory {} ...", workingDirectory);
+      long start=System.nanoTime();
 
       if (Environment.BYTECODEBASED) {
           outputFileName += "resultBytecode_" + folder;
-
-        configFileName=Environment.USEREGISTERCODE? "config/Patterns/ConfigRegisterCodePatterns":"config/Patterns/ConfigByteCodePatterns";
-        params = new Parameters();
-        builder =
-                new FileBasedConfigurationBuilder<FileBasedConfiguration>(PropertiesConfiguration.class)
-                        .configure(params.properties()
-                                .setFileName(configFileName));
-        try {
-          config = builder.getConfiguration();
-        } catch (ConfigurationException e) {
-          e.printStackTrace();
-        }
 
         SpoonBigCloneBenchDriver.bytecode=true;
         SimpleDateFormat f= new SimpleDateFormat("yyyy-MM-dd 'at' HH:mm:ss z");
@@ -252,37 +215,6 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       }
       else {
           outputFileName += "resultSourcecode_" + folder;
-
-          // init config
-          configFileName = "config/Patterns/ConfigSourceCodePatterns";
-          params = new Parameters();
-          builder =
-                  new FileBasedConfigurationBuilder<FileBasedConfiguration>(PropertiesConfiguration.class)
-                          .configure(params.properties()
-                                  .setFileName(configFileName));
-          try {
-              config = builder.getConfiguration();
-          } catch (ConfigurationException e) {
-              e.printStackTrace();
-          }
-
-          // init pathExtractionMode
-          // TODO
-          if (config != null){
-              int pathExtractionModeConfig = config.getInt("pathExtractionMode");
-              if (0 < pathExtractionModeConfig && pathExtractionModeConfig < 4){
-                  pathExtractionMode = pathExtractionModeConfig;
-              }
-              else {
-                  try {
-                      throw new Exception("pathExtractionMode has Unknown Value: " + pathExtractionModeConfig);
-                  }
-                  catch (Exception ignored) {}
-              }
-              if (config.getBoolean("encodeAsInRegistercode")){
-                  encodeAsInRegistercode = true;
-              }
-          }
 
             // traversing the benchmark directory and calling the Spoon driver
 
@@ -514,6 +446,170 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   public void setSkipClones(boolean skipClones)
   {
     this.skipclones=skipClones;
+  }
+
+  private static FileBasedConfiguration loadConfiguration(String configFileName)
+      throws ConfigurationException {
+    return new FileBasedConfigurationBuilder<FileBasedConfiguration>(PropertiesConfiguration.class)
+        .configure(new Parameters().properties().setFileName(configFileName))
+        .getConfiguration();
+  }
+
+  private static String selectedPatternConfigurationFile() {
+    if (!Environment.BYTECODEBASED) {
+      return "config/Patterns/ConfigSourceCodePatterns";
+    }
+    return Environment.USEREGISTERCODE
+        ? "config/Patterns/ConfigRegisterCodePatterns"
+        : "config/Patterns/ConfigByteCodePatterns";
+  }
+
+  private static FileBasedConfiguration loadAndValidatePatternConfiguration(String configFileName)
+      throws ConfigurationException {
+    FileBasedConfiguration configuration = loadConfiguration(configFileName);
+    if (!Environment.BYTECODEBASED) {
+      validateSourcePatternConfiguration(configuration);
+    } else if (Environment.USEREGISTERCODE) {
+      validateRegisterPatternConfiguration(configuration);
+    } else {
+      validateStackPatternConfiguration(configuration);
+    }
+    return configuration;
+  }
+
+  private static void validateSourcePatternConfiguration(
+      FileBasedConfiguration configuration) {
+    configuration.getBoolean("absolutePathLength");
+    configuration.getBoolean("constants");
+    boolean createCfgGraph = configuration.getBoolean("createCFGGraph");
+    boolean createDominatorTreeGraph = configuration.getBoolean("createDominatorTreeGraph");
+    boolean createEncodedDotGraph = configuration.getBoolean("createEncodedDotGraph");
+    boolean configuredEncodeAsInRegisterCode =
+        configuration.getBoolean("encodeAsInRegistercode");
+    configuration.getBoolean("exceptionMode");
+    configuration.getBoolean("fieldread");
+    configuration.getBoolean("fieldwrite");
+    configuration.getBoolean("finalNodes");
+    configuration.getBoolean("functionParameters");
+    configuration.getBoolean("ifNodeCompareOperator");
+    configuration.getBoolean("ifNodeSimplify");
+    configuration.getBoolean("newCode");
+    configuration.getBoolean("parameterNodes");
+    configuration.getBoolean("println");
+    configuration.getBoolean("relativePathLength");
+    configuration.getBoolean("removeSimilarPaths");
+    configuration.getBoolean("specialInvoke");
+    configuration.getBoolean("specialNodes");
+    int configuredPathExtractionMode = configuration.getInt("pathExtractionMode");
+    configuration.getInt("minPathDiff");
+    if (configuredEncodeAsInRegisterCode) {
+      encodeAsInRegistercode = true;
+    }
+    if (configuredPathExtractionMode > 0 && configuredPathExtractionMode < 4) {
+      pathExtractionMode = configuredPathExtractionMode;
+    }
+    if (createCfgGraph || createDominatorTreeGraph
+        || (createEncodedDotGraph && !Environment.MD5)) {
+      requiredConfigurationString(configuration, "graphResultDirectory");
+    }
+  }
+
+  private static void validateRegisterPatternConfiguration(
+      FileBasedConfiguration configuration) {
+    configuration.getBoolean("exceptionMode");
+    configuration.getBoolean("createCFGGraph");
+    configuration.getBoolean("createDominatorTreeGraph");
+    configuration.getBoolean("countExceptions");
+    configuration.getBoolean("connectPathBriefUnitGraph");
+    configuration.getBoolean("virtualNodes");
+    configuration.getBoolean("ifNodeSimplify");
+    configuration.getBoolean("parameterNodes");
+    configuration.getBoolean("stringBuilder");
+    configuration.getBoolean("removeSimilarPaths");
+    configuration.getBoolean("ignoreVirtualNodes");
+    configuration.getBoolean("createEncodedDotGraph");
+    configuration.getBoolean("atNodes");
+    configuration.getBoolean("checkRightAssignNode");
+    configuration.getBoolean("fieldread");
+    configuration.getBoolean("newCode");
+    configuration.getBoolean("constants");
+    configuration.getBoolean("staticCall");
+    configuration.getBoolean("specialInvoke");
+    configuration.getBoolean("ifNodeCompareOperator");
+    configuration.getBoolean("println");
+    configuration.getInt("pathExtractionMode");
+    configuration.getInt("minPathDiff");
+    configuration.getFloat("scaling");
+  }
+
+  private static void validateStackPatternConfiguration(FileBasedConfiguration configuration) {
+    configuration.getBoolean("exceptionMode");
+    configuration.getBoolean("createCFGGraph");
+    configuration.getBoolean("createDominatorTreeGraph");
+    configuration.getBoolean("countExceptions");
+    configuration.getBoolean("connectPathBriefUnitGraph");
+    configuration.getBoolean("removeSimilarPaths");
+    configuration.getBoolean("println");
+    configuration.getBoolean("parameterNodes");
+    configuration.getBoolean("LoadAndInit");
+    configuration.getBoolean("Store");
+    configuration.getBoolean("FieldGetPutStaticGet");
+    configuration.getBoolean("fieldread");
+    configuration.getBoolean("PushPopDup");
+    configuration.getBoolean("constants");
+    configuration.getBoolean("InstanceOfCast");
+    configuration.getBoolean("Compare");
+    configuration.getBoolean("staticCall");
+    configuration.getBoolean("specialInvoke");
+    configuration.getBoolean("InitAppendToString");
+    configuration.getBoolean("ifNodeCompareOperator");
+    configuration.getInt("pathExtractionMode");
+    configuration.getInt("minPathDiff");
+    configuration.getFloat("scaling");
+  }
+
+  private static String requiredConfigurationString(
+      FileBasedConfiguration configuration, String key) {
+    String value = configuration.getString(key);
+    if (value == null) {
+      throw new NoSuchElementException("Missing " + key + " configuration");
+    }
+    return value;
+  }
+
+  private static void configureEnvironment(FileBasedConfiguration configuration) {
+    String metric = requiredConfigurationString(configuration, "METRIC");
+    Environment.THREADSIZE = configuration.getInt("THREADSIZE");
+    Environment.METRIC = metric.equals("NW")
+        ? MetricKind.NW
+        : metric.equals("LEVENSHTEIN") ? MetricKind.LEVENSHTEIN : MetricKind.LCS;
+    Environment.PATHSINSETS = configuration.getBoolean("SPLITTING")
+        ? EncoderKind.SPLITTING
+        : EncoderKind.UNSPLITTING;
+    Environment.TECHNIQUE = configuration.getBoolean("USEHASH")
+        ? EncoderKind.HASH
+        : EncoderKind.COMPLETEPATH;
+    Environment.MD5 = configuration.getBoolean("USEMD5");
+    Environment.THRESHOLD = configuration.getFloat("THRESHOLD");
+    Environment.MINSIZE = configuration.getInt("MINFUNCTIONSIZE");
+    Environment.SUPPORTCALLNAMES = configuration.getBoolean("USEFUNCTIONNAMES");
+    Environment.WIDTHUPPERFAKTOR = configuration.getFloat("UPPERFACTOR");
+    Environment.MINNODESNO = configuration.getBoolean("SPLITTING") ? 1 : 3;
+    Environment.OUTPUT = configuration.getBoolean("OUTPUT");
+    Environment.BYTECODEBASED = configuration.getBoolean("BYTECODEBASEDCLONEDETECTION");
+    Environment.USEREGISTERCODE = configuration.getBoolean("REGISTERCODE_STACKCODE");
+    Environment.STUBBERPROCESSING = configuration.getBoolean("STUBBERPROCESSING");
+    if (Environment.BYTECODEBASED && Environment.USEREGISTERCODE) {
+      Environment.BREMOVESMALLPATHES = 0.4f;
+      Environment.BPATHESDIFF = 0.3f;
+      Environment.WIDTHLOWERNO = 5;
+      Environment.MINNODESNO = 3;
+      Environment.MAXDIFFNODESNO = 7;
+    } else {
+      Environment.BREMOVESMALLPATHES = 0.3f;
+      Environment.BPATHESDIFF = 0.3f;
+      Environment.WIDTHLOWERNO = 3;
+    }
   }
 
   void setSourceRoots(List<Path> sourceRoots) {
@@ -978,19 +1074,31 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     return List.copyOf(entries);
   }
 
-  private static int validatedAnalysisThreads(CommandLine command, int defaultValue)
+  private static OptionalInt validatedExplicitAnalysisThreads(CommandLine command)
       throws ParseException {
     String value = command.getOptionValue("analysis-threads");
+    if (value == null) {
+      return OptionalInt.empty();
+    }
     int analysisThreads;
     try {
-      analysisThreads = value == null ? defaultValue : Integer.parseInt(value);
+      analysisThreads = Integer.parseInt(value);
     } catch (NumberFormatException e) {
       throw new ParseException("Analysis thread count is not a positive integer: " + value);
     }
     if (analysisThreads < 1) {
       throw new ParseException("Analysis thread count is not a positive integer: " + analysisThreads);
     }
-    return analysisThreads;
+    return OptionalInt.of(analysisThreads);
+  }
+
+  private static int selectedAnalysisThreads(
+      OptionalInt explicitAnalysisThreads, int configuredDefault) throws ParseException {
+    int selected = explicitAnalysisThreads.orElse(configuredDefault);
+    if (selected < 1) {
+      throw new ParseException("Analysis thread count is not a positive integer: " + selected);
+    }
+    return selected;
   }
 
   private void driverCloneOutput(String first, String second) {
