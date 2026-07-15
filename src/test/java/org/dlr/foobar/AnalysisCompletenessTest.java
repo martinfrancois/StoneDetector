@@ -2,6 +2,7 @@ package org.dlr.foobar;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -12,6 +13,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
@@ -58,6 +65,100 @@ class AnalysisCompletenessTest {
                 result.stderr());
         assertTrue(Files.readString(errors).isEmpty());
         assertFalse(result.stderr().contains("Analysis incomplete"));
+        assertTrue(result.stderr().contains("Analyzing Java sources with 3 worker(s)"));
+    }
+
+    @Test
+    void configuredSourceParallelismBoundsConcurrentAnalysis() throws Exception {
+        List<Path> sources = new ArrayList<>();
+        for (int index = 0; index < 9; index++) {
+            sources.add(Path.of("Source" + index + ".java"));
+        }
+
+        for (int parallelism : List.of(1, 2, 3)) {
+            AtomicInteger active = new AtomicInteger();
+            AtomicInteger maximumActive = new AtomicInteger();
+            CountDownLatch initialWorkersStarted = new CountDownLatch(parallelism);
+            Set<Path> analyzed = ConcurrentHashMap.newKeySet();
+
+            SpoonBigCloneBenchDriver.analyzeSources(sources, parallelism, source -> {
+                int currentActive = active.incrementAndGet();
+                maximumActive.accumulateAndGet(currentActive, Math::max);
+                initialWorkersStarted.countDown();
+                try {
+                    assertTrue(initialWorkersStarted.await(5, TimeUnit.SECONDS));
+                    analyzed.add(source);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                } finally {
+                    active.decrementAndGet();
+                }
+            });
+
+            assertEquals(parallelism, maximumActive.get());
+            assertEquals(Set.copyOf(sources), analyzed);
+        }
+    }
+
+    @Test
+    void analysisThreadOptionControlsSourceWorkersWithoutChangingResults() throws Exception {
+        Path sources = Files.createDirectory(temporaryDirectory.resolve("analysis-threads"));
+        Files.writeString(sources.resolve("First.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Files.writeString(sources.resolve("Second.java"), cloneSource(2), StandardCharsets.UTF_8);
+
+        for (int parallelism : List.of(1, 2)) {
+            Path errors = temporaryDirectory.resolve("analysis-threads-" + parallelism + ".txt");
+
+            ProcessResult result = runStone(
+                    sources,
+                    errors,
+                    "--analysis-threads=" + parallelism,
+                    "--skipclones");
+
+            assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+            assertTrue(result.stderr().contains(
+                    "Analyzing Java sources with " + parallelism + " worker(s)"));
+            assertTrue(result.stderr().contains("Successfully created AST for 2 out of 2 files"));
+            assertTrue(Files.readString(errors).isEmpty());
+        }
+    }
+
+    @Test
+    void invalidAnalysisThreadCountsFailBeforeSourceAnalysis() throws Exception {
+        Path sources = Files.createDirectory(temporaryDirectory.resolve("invalid-analysis-threads"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+
+        for (String value : List.of("0", "-1", "many", "2147483648")) {
+            Path errors = temporaryDirectory.resolve("invalid-analysis-threads-" + value + ".txt");
+
+            ProcessResult result = runStone(
+                    sources,
+                    errors,
+                    "--analysis-threads=" + value,
+                    "--skipclones");
+
+            assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+            assertTrue(result.stdout().contains("Analysis thread count is not a positive integer"));
+            assertFalse(result.stderr().contains("Parsing Java source file"));
+            assertFalse(Files.exists(errors));
+        }
+    }
+
+    @Test
+    void sourceExecutorPropagatesUnexpectedWorkerFailure() {
+        IllegalStateException failure = new IllegalStateException("source failed");
+
+        ExecutionException result = assertThrows(
+                ExecutionException.class,
+                () -> SpoonBigCloneBenchDriver.analyzeSources(
+                        List.of(Path.of("First.java")),
+                        1,
+                        source -> {
+                            throw failure;
+                        }));
+
+        assertEquals(failure, result.getCause());
     }
 
     @Test
