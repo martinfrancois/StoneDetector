@@ -90,6 +90,8 @@ java -jar build/libs/StoneDetector.jar \
 
 `--classpath-file` is an optional UTF-8 file with one compiled classpath entry per nonblank line. Relative entries are resolved from the classpath file's directory. Entries must already exist as directories or files. StoneDetector passes them directly to Spoon and preserves per-file analysis; it does not run Maven, Gradle, `javac`, or dependency discovery. Include the source set's compiled output when its own compiled types are needed. Invoke StoneDetector separately for source sets or modules that require different classpaths.
 
+`--analysis-threads` sets the maximum number of source files whose Spoon models may be analyzed concurrently. It must be a positive integer and defaults to `THREADSIZE`. Use `--analysis-threads=1` to avoid concurrent source-model memory use on constrained machines or compiler-intensive corpora. Source assignment is deterministic, failures are not retried, and this option does not change clone-comparison parallelism.
+
 A classpath is not a Java module path. StoneDetector therefore parses `module-info.java` descriptors in no-classpath mode even when `--classpath-file` is present. Module descriptors remain syntax-checked and counted, but they contain no methods for clone extraction.
 
 Without `--classpath-file`, the existing no-classpath behavior remains available. In either mode, an incomplete parse or analysis remains a failure rather than producing partial clone output.
@@ -99,7 +101,7 @@ Without `--classpath-file`, the existing no-classpath behavior remains available
 The StoneDetector tool provides various configuration parameters, which allow you to play with its code clone detection capabilities. The tool's configuration parameters are defined in the file `config/default.properties`.
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| THREADSIZE | 3 |Number of parallel threads which are used for code clone detection |
+| THREADSIZE | 3 |Default number of parallel source-analysis workers and number of code-clone comparison workers |
 | MINFUNCTIONSIZE | 15 |Minimal length of code lines for a code fragment to be considered |
 | THRESHOLD | 0.3f |The threshold value used for comparing description sets (max difference) |
 | SPLITTING | false |Whether or not split nodes are used in description sets (detection of subclones/blocks) |
