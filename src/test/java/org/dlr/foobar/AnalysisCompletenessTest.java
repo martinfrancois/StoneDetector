@@ -379,6 +379,40 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void explicitAnalysisThreadsCannotMaskInvalidCloneThreadCount() throws Exception {
+        PatternConfiguration pattern = patternConfigurations().get(0);
+        for (String configuredThreads : List.of("0", "-1")) {
+            Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve(
+                    "invalid-clone-threads-" + configuredThreads.replace('-', 'n')));
+            writeDefaultConfiguration(workingDirectory, pattern);
+            Path defaultConfiguration = workingDirectory.resolve("config/default.properties");
+            Files.writeString(
+                    defaultConfiguration,
+                    Files.readString(defaultConfiguration)
+                            .replace("THREADSIZE=3", "THREADSIZE=" + configuredThreads),
+                    StandardCharsets.UTF_8);
+            writePatternConfiguration(workingDirectory, pattern, null);
+            Path sources = Files.createDirectory(workingDirectory.resolve("sources"));
+            Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+            Path errors = workingDirectory.resolve("errors.txt");
+
+            ProcessResult result = runStoneFromWorkingDirectory(
+                    workingDirectory, sources, errors, "--analysis-threads=1");
+
+            assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+            assertTrue(
+                    result.stdout().contains(
+                            "Clone thread count is not a positive integer: " + configuredThreads),
+                    result.stderr() + result.stdout());
+            assertFalse(result.stderr().contains("Analyzing Java sources"), result.stderr());
+            assertFalse(result.stderr().contains("Parsing Java source file"), result.stderr());
+            assertFalse(result.stderr().contains("Exception"), result.stderr());
+            assertFalse(result.stderr().contains(workingDirectory.toString()), result.stderr());
+            assertFalse(Files.exists(errors));
+        }
+    }
+
+    @Test
     void sourceExecutorPropagatesUnexpectedWorkerFailure() {
         IllegalStateException failure = new IllegalStateException("source failed");
 
