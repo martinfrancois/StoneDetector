@@ -533,7 +533,9 @@ public class ControlFlowBuilder implements CtVisitor {
 		tryAddEdge(branch, convergenceNodeOut);
 
 		lastNode = convergenceNode;
-		doLoop.getBody().accept(this);
+		if (doLoop.getBody() != null) {
+			doLoop.getBody().accept(this);
+		}
 		tryAddEdge(lastNode, branch);
 
 		lastNode = convergenceNodeOut;
@@ -645,7 +647,9 @@ public class ControlFlowBuilder implements CtVisitor {
 
 		//Body
 		lastNode = branch;
-		foreach.getBody().accept(this);
+		if (foreach.getBody() != null) {
+			foreach.getBody().accept(this);
+		}
 
 		tryAddEdge(lastNode, branch, true, false);
 
