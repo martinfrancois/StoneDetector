@@ -30,6 +30,7 @@ import spoon.processing.AbstractProcessor;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Paths;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
@@ -71,6 +72,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   private static final ThreadLocal<Path> currentFile = new ThreadLocal<>();
   private String workingDirectory, outputDirectory;
   private List<Path> sourceRoots;
+  private List<Path> sourceFiles = List.of();
   private String[] sourceClasspath = new String[0];
 
   private static final ArrayList<MethodTuple> outputTuples = new ArrayList<MethodTuple>();
@@ -104,6 +106,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         .hasArg()
         .argName("directory")
         .desc("Source root to scan; repeat for one source set (defaults to --directory)")
+        .get());
+    options.addOption(Option.builder()
+        .longOpt("source-file-list")
+        .hasArg()
+        .argName("file")
+        .desc("UTF-8 file containing the exact Java sources to analyze")
         .get());
     options.addOption(Option.builder()
         .longOpt("classpath-file")
@@ -142,7 +150,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       logger.info("Traversing working directory {} ...", workingDirectory);
       long start=System.nanoTime();
       SpoonBigCloneBenchDriver driver = new SpoonBigCloneBenchDriver(workingDirectory);
-      driver.setSourceRoots(validatedSourceRoots(cmd, workingDirectoryPath));
+      List<Path> sourceFiles = validatedSourceFiles(cmd, workingDirectoryPath);
+      if (sourceFiles.isEmpty()) {
+        driver.setSourceRoots(validatedSourceRoots(cmd, workingDirectoryPath));
+      } else {
+        driver.setSourceFiles(sourceFiles);
+      }
       driver.setSourceClasspath(validatedSourceClasspath(cmd));
       driver.skipclones = cmd.hasOption("skipclones");
       driver.setErrors(cmd.hasOption("error-file"));
@@ -499,6 +512,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
 
   void setSourceRoots(List<Path> sourceRoots) {
     this.sourceRoots = List.copyOf(sourceRoots);
+    this.sourceFiles = List.of();
+  }
+
+  void setSourceFiles(List<Path> sourceFiles) {
+    this.sourceFiles = List.copyOf(sourceFiles);
+    this.sourceRoots = List.of();
   }
 
   void setSourceClasspath(List<Path> sourceClasspath) {
@@ -660,6 +679,9 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
 
   private void processSourceFiles() {
     Map<Path, Path> sourceFilesByIdentity = new HashMap<>();
+    for (Path sourceFile : sourceFiles) {
+      sourceFilesByIdentity.put(sourceFile, sourceFile);
+    }
     for (Path sourceRoot : sourceRoots) {
       try (Stream<Path> paths = Files.walk(sourceRoot)) {
         Iterator<Path> sourceFiles = paths.iterator();
@@ -733,6 +755,78 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       }
     }
     return List.copyOf(roots);
+  }
+
+  private static List<Path> validatedSourceFiles(CommandLine command, Path workingDirectory)
+      throws ParseException {
+    String value = command.getOptionValue("source-file-list");
+    if (value == null) {
+      return List.of();
+    }
+    if (command.hasOption("source-root")) {
+      throw new ParseException("--source-file-list cannot be combined with --source-root");
+    }
+
+    Path manifest;
+    try {
+      manifest = Paths.get(value).toAbsolutePath().normalize();
+    } catch (InvalidPathException e) {
+      throw new ParseException("Source file list has an invalid path: " + value);
+    }
+    if (!Files.isRegularFile(manifest) || !Files.isReadable(manifest)) {
+      throw new ParseException("Source file list is not a readable file: " + value);
+    }
+
+    Path realWorkingDirectory;
+    try {
+      realWorkingDirectory = workingDirectory.toRealPath();
+    } catch (IOException e) {
+      throw new ParseException("Could not resolve working directory: " + workingDirectory);
+    }
+
+    Map<Path, Path> sourcesByIdentity = new HashMap<>();
+    try {
+      for (String line : Files.readAllLines(manifest, StandardCharsets.UTF_8)) {
+        String entryValue = line.strip();
+        if (entryValue.isEmpty()) {
+          continue;
+        }
+        Path configured;
+        try {
+          configured = Paths.get(entryValue);
+        } catch (InvalidPathException e) {
+          throw new ParseException("Source file list contains an invalid path: " + entryValue);
+        }
+        Path source = configured.isAbsolute()
+            ? configured.normalize()
+            : workingDirectory.resolve(configured).normalize();
+        if (!Files.isRegularFile(source) || !Files.isReadable(source)) {
+          throw new ParseException("Source file is not a readable file: " + entryValue);
+        }
+        if (!source.getFileName().toString().endsWith(".java")) {
+          throw new ParseException("Source file is not a Java source: " + entryValue);
+        }
+        Path realSource;
+        try {
+          realSource = source.toRealPath();
+        } catch (IOException e) {
+          throw new ParseException("Could not resolve source file: " + entryValue);
+        }
+        if (!realSource.startsWith(realWorkingDirectory)) {
+          throw new ParseException("Source file resolves outside the working directory: " + entryValue);
+        }
+        Path normalizedSource = workingDirectory
+            .resolve(realWorkingDirectory.relativize(realSource))
+            .normalize();
+        sourcesByIdentity.put(realSource, normalizedSource);
+      }
+    } catch (IOException e) {
+      throw new ParseException("Could not read source file list: " + value);
+    }
+    if (sourcesByIdentity.isEmpty()) {
+      throw new ParseException("Source file list contains no Java sources: " + value);
+    }
+    return sourcesByIdentity.values().stream().sorted().toList();
   }
 
   private static List<Path> validatedSourceClasspath(CommandLine command) throws ParseException {
