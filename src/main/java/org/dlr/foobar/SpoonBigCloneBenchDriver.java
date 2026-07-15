@@ -188,6 +188,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
 
       int poolSize=Environment.THREADSIZE;
       int analysisThreads = selectedAnalysisThreads(explicitAnalysisThreads, poolSize);
+      validateCloneThreads(poolSize, driver.skipclones);
 
       configFileName = selectedPatternConfigurationFile();
       try {
@@ -1090,6 +1091,14 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       throw new ParseException("Analysis thread count is not a positive integer: " + selected);
     }
     return selected;
+  }
+
+  private static void validateCloneThreads(int configuredThreads, boolean skipClones)
+      throws ParseException {
+    if (!skipClones && configuredThreads < 1) {
+      throw new ParseException(
+          "Clone thread count is not a positive integer: " + configuredThreads);
+    }
   }
 
   private void driverCloneOutput(String first, String second) {
