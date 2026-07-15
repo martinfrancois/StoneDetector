@@ -38,6 +38,7 @@ import java.util.*;
 import java.util.EnumSet;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -118,6 +119,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         .hasArg()
         .argName("file")
         .desc("UTF-8 file containing one compiled classpath entry per line")
+        .get());
+    options.addOption(Option.builder()
+        .longOpt("analysis-threads")
+        .hasArg()
+        .argName("count")
+        .desc("Maximum concurrent source analyses (defaults to THREADSIZE)")
         .get());
     options.addOption(new Option("e", "error-file", true,
         "Write errors to file"));
@@ -216,6 +223,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         }
 
       int poolSize=Environment.THREADSIZE;
+      int analysisThreads = validatedAnalysisThreads(cmd, poolSize);
 
       if (Environment.BYTECODEBASED) {
           outputFileName += "resultBytecode_" + folder;
@@ -276,12 +284,8 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
 
             // traversing the benchmark directory and calling the Spoon driver
 
-            ForkJoinPool myPool = new ForkJoinPool(poolSize);
-            try {
-              myPool.submit(driver::processSourceFiles).get();
-            } finally {
-              myPool.shutdown();
-            }
+            logger.info("Analyzing Java sources with {} worker(s)", analysisThreads);
+            driver.processSourceFiles(analysisThreads);
 
       // logging
       logger.info("Successfully created AST for {} out of {} files",
@@ -677,7 +681,18 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         ExceptionUtils.getStackTrace(e)));
   }
 
-  private void processSourceFiles() {
+  private void processSourceFiles(int analysisThreads)
+      throws InterruptedException, ExecutionException {
+    List<Path> selectedSources;
+    try {
+      selectedSources = selectedSourceFiles();
+    } catch (RuntimeException e) {
+      throw new ExecutionException(e);
+    }
+    analyzeSources(selectedSources, analysisThreads, this::process);
+  }
+
+  private List<Path> selectedSourceFiles() {
     Map<Path, Path> sourceFilesByIdentity = new HashMap<>();
     for (Path sourceFile : sourceFiles) {
       sourceFilesByIdentity.put(sourceFile, sourceFile);
@@ -703,7 +718,39 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         throw new UncheckedIOException("Unable to access " + sourceRoot, e);
       }
     }
-    sourceFilesByIdentity.values().stream().sorted().parallel().forEach(this::process);
+    return sourceFilesByIdentity.values().stream().sorted().toList();
+  }
+
+  static void analyzeSources(
+      List<Path> sourceFiles, int analysisThreads, Consumer<Path> sourceAnalysis)
+      throws InterruptedException, ExecutionException {
+    if (analysisThreads < 1) {
+      throw new IllegalArgumentException("Analysis thread count must be positive");
+    }
+    if (sourceFiles.isEmpty()) {
+      return;
+    }
+
+    int workerCount = Math.min(analysisThreads, sourceFiles.size());
+    ExecutorService executor = Executors.newFixedThreadPool(workerCount);
+    List<Future<?>> workers = new ArrayList<>(workerCount);
+    try {
+      for (int workerIndex = 0; workerIndex < workerCount; workerIndex++) {
+        int firstSourceIndex = workerIndex;
+        workers.add(executor.submit(() -> {
+          for (int sourceIndex = firstSourceIndex;
+              sourceIndex < sourceFiles.size();
+              sourceIndex += workerCount) {
+            sourceAnalysis.accept(sourceFiles.get(sourceIndex));
+          }
+        }));
+      }
+      for (Future<?> worker : workers) {
+        worker.get();
+      }
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   private static boolean isJavaSource(Path path) {
@@ -866,6 +913,21 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       throw new ParseException("Classpath file contains no entries: " + value);
     }
     return List.copyOf(entries);
+  }
+
+  private static int validatedAnalysisThreads(CommandLine command, int defaultValue)
+      throws ParseException {
+    String value = command.getOptionValue("analysis-threads");
+    int analysisThreads;
+    try {
+      analysisThreads = value == null ? defaultValue : Integer.parseInt(value);
+    } catch (NumberFormatException e) {
+      throw new ParseException("Analysis thread count is not a positive integer: " + value);
+    }
+    if (analysisThreads < 1) {
+      throw new ParseException("Analysis thread count is not a positive integer: " + analysisThreads);
+    }
+    return analysisThreads;
   }
 
   private void driverCloneOutput(String first, String second) {
