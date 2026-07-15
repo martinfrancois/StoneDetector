@@ -151,6 +151,155 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void explicitSourceManifestAnalyzesOnlyValidatedDeduplicatedSources() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("source-manifest-project"));
+        Path selected = Files.createDirectory(project.resolve("selected"));
+        Path first = selected.resolve("First.java");
+        Path second = selected.resolve("Second.java");
+        Files.writeString(first, cloneSource(1), StandardCharsets.UTF_8);
+        Files.writeString(second, cloneSource(2), StandardCharsets.UTF_8);
+        Files.writeString(
+                project.resolve("Broken.java"),
+                "class Broken { void method( { }",
+                StandardCharsets.UTF_8);
+        Path alias = project.resolve("FirstAlias.java");
+        createSymbolicLinkOrSkip(alias, project.relativize(first));
+        Path manifest = project.resolve("sources.txt");
+        Files.writeString(
+                manifest,
+                "selected/Second.java\n"
+                        + first.toAbsolutePath()
+                        + "\nFirstAlias.java\n\n",
+                StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 2 out of 2 files"));
+        assertFalse(result.stderr().contains("Broken.java"));
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void sourceManifestAcceptsUtf8BomOnItsFirstEntry() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("bom-source-manifest"));
+        Path source = project.resolve("Valid.java");
+        Files.writeString(source, cloneSource(1), StandardCharsets.UTF_8);
+        Path manifest = project.resolve("sources.txt");
+        Files.writeString(manifest, "\uFEFFValid.java\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void sourceManifestDeduplicatesHardLinkedSources() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("hard-link-source-manifest"));
+        Path source = project.resolve("Original.java");
+        Files.writeString(source, cloneSource(1), StandardCharsets.UTF_8);
+        Path alias = project.resolve("Alias.java");
+        createHardLinkOrSkip(alias, source);
+        Path manifest = project.resolve("sources.txt");
+        Files.writeString(manifest, "Original.java\nAlias.java\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
+    void selectedManifestFailureRemainsFailClosedAndDeterministic() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("failing-manifest-project"));
+        Path first = project.resolve("FirstBroken.java");
+        Path second = project.resolve("SecondBroken.java");
+        Files.writeString(first, classpathDependentSource(), StandardCharsets.UTF_8);
+        Files.writeString(second, classpathDependentSource(), StandardCharsets.UTF_8);
+        Path manifest = project.resolve("sources.txt");
+        Files.writeString(
+                manifest,
+                "SecondBroken.java\nFirstBroken.java\n",
+                StandardCharsets.UTF_8);
+        Files.createDirectory(project.resolve("incomplete-classes"));
+        Path classpathFile = project.resolve("incomplete-classpath.txt");
+        Files.writeString(classpathFile, "incomplete-classes\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--classpath-file=" + classpathFile,
+                "--skipclones");
+        String diagnostics = Files.readString(errors);
+
+        assertEquals(2, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 0 out of 2 files"));
+        assertTrue(result.stderr().contains("Analysis incomplete"));
+        assertTrue(diagnostics.indexOf("FirstBroken.java") < diagnostics.indexOf("SecondBroken.java"));
+    }
+
+    @Test
+    void sourceManifestCannotBeCombinedWithSourceRoots() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("conflicting-source-selection"));
+        Path source = project.resolve("Valid.java");
+        Files.writeString(source, cloneSource(1), StandardCharsets.UTF_8);
+        Path manifest = project.resolve("sources.txt");
+        Files.writeString(manifest, "Valid.java\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--source-root=.",
+                "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stdout().contains(
+                "--source-file-list cannot be combined with --source-root"));
+        assertFalse(result.stderr().contains("Parsing Java source file"));
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void sourceManifestRejectsInvalidEntriesBeforeAnalysis() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("invalid-source-manifest"));
+        Path nonJava = project.resolve("README.txt");
+        Files.writeString(nonJava, "not Java", StandardCharsets.UTF_8);
+        Path external = temporaryDirectory.resolve("External.java");
+        Files.writeString(external, cloneSource(3), StandardCharsets.UTF_8);
+
+        assertManifestRejected(project, "missing.java\n", "Source file is not a readable file");
+        assertManifestRejected(project, "README.txt\n", "Source file is not a Java source");
+        assertManifestRejected(
+                project,
+                external.toAbsolutePath() + "\n",
+                "Source file resolves outside the working directory");
+        assertManifestRejected(project, "invalid\u0000path.java\n", "invalid path");
+        assertManifestRejected(project, "\n  \n", "contains no Java sources");
+    }
+
+    @Test
     void invalidExplicitClasspathFailsBeforeSourceAnalysis() throws Exception {
         Path project = Files.createDirectory(temporaryDirectory.resolve("invalid-classpath-project"));
         Files.writeString(project.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
@@ -281,6 +430,24 @@ class AnalysisCompletenessTest {
         String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
         return new ProcessResult(process.waitFor(), stdout, stderr);
+    }
+
+    private void assertManifestRejected(Path project, String contents, String expectedMessage)
+            throws Exception {
+        Path manifest = project.resolve("manifest-" + Math.abs(contents.hashCode()) + ".txt");
+        Files.writeString(manifest, contents, StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors-" + Math.abs(contents.hashCode()) + ".txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-file-list=" + manifest,
+                "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stdout().contains(expectedMessage), result.stdout());
+        assertFalse(result.stderr().contains("Parsing Java source file"));
+        assertFalse(Files.exists(errors));
     }
 
     private static String modernSource(int index) {
