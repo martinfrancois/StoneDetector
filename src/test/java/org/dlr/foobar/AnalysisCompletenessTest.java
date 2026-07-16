@@ -17,6 +17,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -892,6 +895,35 @@ class AnalysisCompletenessTest {
         assertEquals(first.stdout(), second.stdout());
     }
 
+    @Test
+    void subprocessOutputDrainsStandardOutputAndErrorWithoutDeadlocking() throws Exception {
+        List<String> command = List.of(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-cp",
+                System.getProperty("java.class.path"),
+                StderrFloodingChild.class.getName());
+        Process process = new ProcessBuilder(command).start();
+        ExecutorService captureExecutor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "subprocess-capture-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+
+        try {
+            Future<ProcessResult> captured = captureExecutor.submit(() -> captureProcess(process));
+            ProcessResult result = captured.get(10, TimeUnit.SECONDS);
+
+            assertEquals(0, result.exitCode(), result.stderr());
+            assertEquals("stdout complete\n", result.stdout());
+            assertEquals(StderrFloodingChild.STDERR_BYTES, result.stderr().length());
+        } finally {
+            process.destroyForcibly();
+            process.waitFor(5, TimeUnit.SECONDS);
+            captureExecutor.shutdownNow();
+            captureExecutor.awaitTermination(5, TimeUnit.SECONDS);
+        }
+    }
+
     private ProcessResult runStone(Path sources, Path errors, String... additionalArguments)
             throws IOException, InterruptedException {
         return runStoneFromWorkingDirectory(
@@ -916,9 +948,46 @@ class AnalysisCompletenessTest {
         Process process = new ProcessBuilder(command)
                 .directory(workingDirectory.toFile())
                 .start();
-        String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-        return new ProcessResult(process.waitFor(), stdout, stderr);
+        return captureProcess(process);
+    }
+
+    private static ProcessResult captureProcess(Process process)
+            throws IOException, InterruptedException {
+        ExecutorService streamExecutor = Executors.newFixedThreadPool(2, runnable -> {
+            Thread thread = new Thread(runnable, "subprocess-stream-reader");
+            thread.setDaemon(true);
+            return thread;
+        });
+        Future<byte[]> stdout =
+                streamExecutor.submit(() -> process.getInputStream().readAllBytes());
+        Future<byte[]> stderr =
+                streamExecutor.submit(() -> process.getErrorStream().readAllBytes());
+        boolean processExited = false;
+        try {
+            int exitCode = process.waitFor();
+            processExited = true;
+            return new ProcessResult(
+                    exitCode,
+                    new String(awaitProcessOutput(stdout), StandardCharsets.UTF_8),
+                    new String(awaitProcessOutput(stderr), StandardCharsets.UTF_8));
+        } finally {
+            if (!processExited) {
+                process.destroyForcibly();
+            }
+            streamExecutor.shutdownNow();
+        }
+    }
+
+    private static byte[] awaitProcessOutput(Future<byte[]> output)
+            throws IOException, InterruptedException {
+        try {
+            return output.get();
+        } catch (ExecutionException exception) {
+            if (exception.getCause() instanceof IOException ioException) {
+                throw ioException;
+            }
+            throw new IOException("Could not read subprocess output", exception.getCause());
+        }
     }
 
     private static void assertConfigurationFailure(
@@ -1240,6 +1309,22 @@ class AnalysisCompletenessTest {
     }
 
     private record ProcessResult(int exitCode, String stdout, String stderr) {}
+
+    public static final class StderrFloodingChild {
+
+        static final int STDERR_BYTES = 4 * 1024 * 1024;
+
+        private StderrFloodingChild() {}
+
+        public static void main(String[] arguments) throws IOException {
+            byte[] stderr = new byte[STDERR_BYTES];
+            java.util.Arrays.fill(stderr, (byte) 'x');
+            System.err.write(stderr);
+            System.err.flush();
+            System.out.write("stdout complete\n".getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+        }
+    }
 
     private record FeatureSource(String fileName, String source) {}
 
