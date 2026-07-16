@@ -495,6 +495,29 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void classpathManifestAcceptsUtf8BomOnItsFirstEntry() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("bom-classpath-project"));
+        Path classes = Files.createDirectory(project.resolve("classes"));
+        Path sources = Files.createDirectory(project.resolve("sources"));
+        Files.writeString(sources.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path classpathFile = project.resolve("classpath.txt");
+        Files.writeString(classpathFile, "\uFEFFclasses\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(
+                project,
+                errors,
+                "--source-root=sources",
+                "--classpath-file=" + classpathFile,
+                "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(result.stdout().isEmpty(), result.stdout());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
     void explicitSourceRootsAnalyzeOnlyTheRequestedSourceSet() throws Exception {
         Path project = Files.createDirectory(temporaryDirectory.resolve("source-root-project"));
         Path selectedOne = Files.createDirectory(project.resolve("selected"));
