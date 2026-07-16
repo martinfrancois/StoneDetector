@@ -69,6 +69,28 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void currentDirectoryAnalyzesRootLevelSources() throws Exception {
+        PatternConfiguration pattern = patternConfigurations().get(0);
+        Path workingDirectory = Files.createDirectory(temporaryDirectory.resolve("current-directory"));
+        writeDefaultConfiguration(workingDirectory, pattern);
+        writePatternConfiguration(workingDirectory, pattern, null);
+        Files.writeString(
+                workingDirectory.resolve("Sample.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path errors = workingDirectory.resolve("errors.txt");
+
+        ProcessResult result = runStoneFromWorkingDirectory(
+                workingDirectory, Path.of("."), errors);
+
+        assertEquals(
+                0,
+                result.exitCode(),
+                Files.readString(errors) + result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(result.stderr().contains("Successfully encoded paths for 1 out of 1 methods"));
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
     void configuredSourceParallelismBoundsConcurrentAnalysis() throws Exception {
         List<Path> sources = new ArrayList<>();
         for (int index = 0; index < 9; index++) {
