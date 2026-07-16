@@ -912,7 +912,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   }
 
   private static Path validatedWorkingDirectory(String value) throws ParseException {
-    Path directory = Paths.get(value).normalize();
+    Path directory = Paths.get(value).toAbsolutePath().normalize();
     if (!Files.isDirectory(directory) || !Files.isReadable(directory)) {
       throw new ParseException("Working directory is not a readable directory: " + value);
     }
