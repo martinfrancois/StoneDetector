@@ -932,7 +932,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   }
 
   private static Path validatedWorkingDirectory(String value) throws ParseException {
-    Path directory = Paths.get(value).toAbsolutePath().normalize();
+    Path directory = validatedCommandPath(value, "Working directory").toAbsolutePath().normalize();
     if (!Files.isDirectory(directory) || !Files.isReadable(directory)) {
       throw new ParseException("Working directory is not a readable directory: " + value);
     }
@@ -954,7 +954,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       throw new ParseException("Could not resolve working directory: " + workingDirectory);
     }
     for (String value : values) {
-      Path configured = Paths.get(value);
+      Path configured = validatedCommandPath(value, "Source root");
       Path configuredSourceRoot = configured.isAbsolute()
           ? configured.normalize()
           : workingDirectory.resolve(configured).normalize();
@@ -972,6 +972,14 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       }
     }
     return List.copyOf(roots);
+  }
+
+  static Path validatedCommandPath(String value, String description) throws ParseException {
+    try {
+      return Paths.get(value);
+    } catch (InvalidPathException e) {
+      throw new ParseException(description + " has an invalid path: " + value);
+    }
   }
 
   private static List<Path> validatedSourceFiles(CommandLine command, Path workingDirectory)
@@ -1062,7 +1070,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       return List.of();
     }
 
-    Path classpathFile = Paths.get(value).toAbsolutePath().normalize();
+    Path classpathFile;
+    try {
+      classpathFile = Paths.get(value).toAbsolutePath().normalize();
+    } catch (InvalidPathException e) {
+      throw new ParseException("Classpath file has an invalid path: " + value);
+    }
     if (!Files.isRegularFile(classpathFile) || !Files.isReadable(classpathFile)) {
       throw new ParseException("Classpath file is not a readable file: " + value);
     }
@@ -1079,7 +1092,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
         if (line.isBlank()) {
           continue;
         }
-        Path configured = Paths.get(line);
+        Path configured;
+        try {
+          configured = Paths.get(line);
+        } catch (InvalidPathException e) {
+          throw new ParseException("Classpath file contains an invalid path: " + line);
+        }
         Path entry = configured.isAbsolute()
             ? configured.normalize()
             : baseDirectory.resolve(configured).normalize();

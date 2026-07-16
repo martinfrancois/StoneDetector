@@ -735,6 +735,42 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void classpathManifestRejectsInvalidPathsBeforeSourceAnalysis() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("invalid-classpath-path"));
+        Files.writeString(project.resolve("Valid.java"), cloneSource(1), StandardCharsets.UTF_8);
+        Path classpathFile = project.resolve("classpath.txt");
+        String invalidEntry = "invalid\u0000path";
+        Files.writeString(classpathFile, invalidEntry + "\n", StandardCharsets.UTF_8);
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result =
+                runStone(project, errors, "--classpath-file=" + classpathFile, "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(
+                result.stdout().contains("Classpath file contains an invalid path: " + invalidEntry),
+                result.stdout());
+        assertFalse(result.stderr().contains("InvalidPathException"), result.stderr());
+        assertFalse(result.stderr().contains("\tat "), result.stderr());
+        assertFalse(result.stderr().contains("Parsing Java source file"), result.stderr());
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void commandDirectoryAndSourceRootRejectInvalidPathsCleanly() {
+        String invalidPath = "invalid\u0000path";
+
+        for (String description : List.of("Working directory", "Source root")) {
+            org.apache.commons.cli.ParseException failure = assertThrows(
+                    org.apache.commons.cli.ParseException.class,
+                    () -> SpoonBigCloneBenchDriver.validatedCommandPath(invalidPath, description));
+
+            assertEquals(description + " has an invalid path: " + invalidPath, failure.getMessage());
+            assertFalse(failure.toString().contains("InvalidPathException"));
+        }
+    }
+
+    @Test
     void inTreeSymbolicLinkRootsAreCanonicalizedAndAnalyzedOnce() throws Exception {
         Path project = Files.createDirectory(temporaryDirectory.resolve("symlink-source-root-project"));
         Path sources = Files.createDirectory(project.resolve("sources"));
