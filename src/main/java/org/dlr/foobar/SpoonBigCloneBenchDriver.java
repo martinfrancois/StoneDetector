@@ -801,7 +801,7 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
   }
 
   private void processSourceFiles(int analysisThreads)
-      throws InterruptedException, ExecutionException {
+      throws InterruptedException, ExecutionException, ParseException {
     List<Path> selectedSources;
     try {
       selectedSources = selectedSourceFiles();
@@ -811,11 +811,20 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     analyzeSources(selectedSources, analysisThreads, this::process);
   }
 
-  private List<Path> selectedSourceFiles() {
+  private List<Path> selectedSourceFiles() throws ParseException {
+    Path workingDirectoryPath = Paths.get(workingDirectory);
+    Path realWorkingDirectory;
+    try {
+      realWorkingDirectory = workingDirectoryPath.toRealPath();
+    } catch (IOException e) {
+      throw new ParseException("Could not resolve working directory: " + workingDirectory);
+    }
     SourceFilesByIdentity sourceFilesByIdentity = new SourceFilesByIdentity();
     for (Path sourceFile : sourceFiles) {
       try {
-        sourceFilesByIdentity.add(sourceFile.toRealPath(), sourceFile);
+        Path realSource =
+            validatedDiscoveredSource(sourceFile, workingDirectoryPath, realWorkingDirectory);
+        sourceFilesByIdentity.add(realSource, realSource);
       } catch (IOException e) {
         throw new UncheckedIOException("Unable to resolve " + sourceFile, e);
       }
@@ -829,7 +838,9 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
             continue;
           }
           try {
-            sourceFilesByIdentity.add(sourceFile.toRealPath(), sourceFile);
+            Path realSource =
+                validatedDiscoveredSource(sourceFile, workingDirectoryPath, realWorkingDirectory);
+            sourceFilesByIdentity.add(realSource, realSource);
           } catch (IOException e) {
             throw new UncheckedIOException("Unable to resolve " + sourceFile, e);
           }
@@ -839,6 +850,25 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
       }
     }
     return sourceFilesByIdentity.sortedSources();
+  }
+
+  private static Path validatedDiscoveredSource(
+      Path sourceFile, Path workingDirectory, Path realWorkingDirectory) throws ParseException {
+    Path absoluteSource = sourceFile.toAbsolutePath().normalize();
+    String displaySource = absoluteSource.startsWith(workingDirectory)
+        ? workingDirectory.relativize(absoluteSource).toString()
+        : sourceFile.toString();
+    Path realSource;
+    try {
+      realSource = sourceFile.toRealPath();
+    } catch (IOException e) {
+      throw new ParseException("Could not resolve source file: " + displaySource);
+    }
+    if (!realSource.startsWith(realWorkingDirectory)) {
+      throw new ParseException(
+          "Source file resolves outside the working directory: " + displaySource);
+    }
+    return realSource;
   }
 
   static void analyzeSources(
@@ -936,7 +966,11 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     if (!Files.isDirectory(directory) || !Files.isReadable(directory)) {
       throw new ParseException("Working directory is not a readable directory: " + value);
     }
-    return directory;
+    try {
+      return directory.toRealPath();
+    } catch (IOException e) {
+      throw new ParseException("Could not resolve working directory: " + value);
+    }
   }
 
   private static List<Path> validatedSourceRoots(CommandLine command, Path workingDirectory)
