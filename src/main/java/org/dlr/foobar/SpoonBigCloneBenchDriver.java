@@ -1070,7 +1070,12 @@ public class SpoonBigCloneBenchDriver extends AbstractProcessor<CtClass> {
     LinkedHashSet<Path> entries = new LinkedHashSet<>();
     try {
       Path baseDirectory = classpathFile.getParent();
-      for (String line : Files.readAllLines(classpathFile, StandardCharsets.UTF_8)) {
+      List<String> lines = Files.readAllLines(classpathFile, StandardCharsets.UTF_8);
+      for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+        String line = lines.get(lineIndex);
+        if (lineIndex == 0 && line.startsWith("\uFEFF")) {
+          line = line.substring(1);
+        }
         if (line.isBlank()) {
           continue;
         }
