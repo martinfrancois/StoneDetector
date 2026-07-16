@@ -794,6 +794,45 @@ class AnalysisCompletenessTest {
     }
 
     @Test
+    void recursiveSourceDiscoveryRejectsSymbolicLinkToSourceOutsideWorkingDirectory()
+            throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("file-symlink-project"));
+        Path external = temporaryDirectory.resolve("External.java");
+        Files.writeString(external, cloneSource(1), StandardCharsets.UTF_8);
+        Path linkedSource = project.resolve("Linked.java");
+        createSymbolicLinkOrSkip(linkedSource, project.relativize(external));
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(project, errors, "--skipclones");
+
+        assertEquals(1, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stdout().contains(
+                "Source file resolves outside the working directory: Linked.java"));
+        assertFalse(result.stderr().contains("Parsing Java source file"), result.stderr());
+        assertFalse(Files.exists(errors));
+    }
+
+    @Test
+    void recursiveSourceDiscoveryAcceptsAndDeduplicatesInTreeSymbolicLink() throws Exception {
+        Path project = Files.createDirectory(temporaryDirectory.resolve("in-tree-file-symlink"));
+        Path source = project.resolve("Original.java");
+        Files.writeString(source, cloneSource(1), StandardCharsets.UTF_8);
+        createSymbolicLinkOrSkip(project.resolve("Alias.java"), source.getFileName());
+        Path errors = project.resolve("errors.txt");
+
+        ProcessResult result = runStone(project, errors, "--skipclones");
+
+        assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
+        assertTrue(result.stderr().contains("Successfully created AST for 1 out of 1 files"));
+        assertTrue(result.stderr().contains("Parsing Java source file " + source), result.stderr());
+        assertFalse(
+                result.stderr()
+                        .contains("Parsing Java source file " + project.resolve("Alias.java")),
+                result.stderr());
+        assertTrue(Files.readString(errors).isEmpty());
+    }
+
+    @Test
     void intermediateSymbolicLinkCannotEscapeTheWorkingDirectory() throws Exception {
         Path project = Files.createDirectory(temporaryDirectory.resolve("symlink-containment-project"));
         Path external = Files.createDirectories(temporaryDirectory.resolve("external/sources"));
