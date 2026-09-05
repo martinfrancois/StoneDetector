@@ -454,6 +454,7 @@ class AnalysisCompletenessTest {
         Path project = Files.createDirectory(temporaryDirectory.resolve("classpath-project"));
         Path dependencySources = Files.createDirectories(project.resolve("dependency/p"));
         Path classes = Files.createDirectory(project.resolve("classes"));
+        Path incompleteClasses = Files.createDirectory(project.resolve("incomplete-classes"));
         Path sources = Files.createDirectory(project.resolve("sources"));
         Path dependency = dependencySources.resolve("Callbacks.java");
         Files.writeString(dependency, callbackTypes(), StandardCharsets.UTF_8);
@@ -465,11 +466,17 @@ class AnalysisCompletenessTest {
                 StandardCharsets.UTF_8);
         Path classpathFile = project.resolve("classpath.txt");
         Files.writeString(classpathFile, "classes\n", StandardCharsets.UTF_8);
-        Path noClasspathErrors = project.resolve("no-classpath-errors.txt");
+        Path incompleteClasspathFile = project.resolve("incomplete-classpath.txt");
+        Files.writeString(incompleteClasspathFile, "incomplete-classes\n", StandardCharsets.UTF_8);
+        Path incompleteClasspathErrors = project.resolve("incomplete-classpath-errors.txt");
         Path errors = project.resolve("errors.txt");
 
-        ProcessResult unresolved =
-                runStone(project, noClasspathErrors, "--source-root=sources", "--skipclones");
+        ProcessResult unresolved = runStone(
+                project,
+                incompleteClasspathErrors,
+                "--source-root=sources",
+                "--classpath-file=" + incompleteClasspathFile,
+                "--skipclones");
         ProcessResult result = runStone(
                 project,
                 errors,
@@ -479,7 +486,7 @@ class AnalysisCompletenessTest {
 
         assertEquals(2, unresolved.exitCode(), unresolved.stderr() + unresolved.stdout());
         assertTrue(unresolved.stderr().contains("Analysis incomplete"));
-        assertFalse(Files.readString(noClasspathErrors).isEmpty());
+        assertFalse(Files.readString(incompleteClasspathErrors).isEmpty());
         assertEquals(0, result.exitCode(), result.stderr() + result.stdout());
         assertTrue(result.stderr().contains("Successfully created AST for 2 out of 2 files"));
         assertTrue(result.stderr().contains("Successfully encoded paths for 1 out of 1 methods"));
@@ -553,6 +560,9 @@ class AnalysisCompletenessTest {
         Path second = project.resolve("SecondBroken.java");
         Files.writeString(first, classpathDependentSource(), StandardCharsets.UTF_8);
         Files.writeString(second, classpathDependentSource(), StandardCharsets.UTF_8);
+        Files.createDirectory(project.resolve("incomplete-classes"));
+        Path classpathFile = project.resolve("incomplete-classpath.txt");
+        Files.writeString(classpathFile, "incomplete-classes\n", StandardCharsets.UTF_8);
         Path manifest = project.resolve("sources.txt");
         Files.writeString(
                 manifest,
@@ -564,6 +574,7 @@ class AnalysisCompletenessTest {
                 project,
                 errors,
                 "--source-file-list=" + manifest,
+                "--classpath-file=" + classpathFile,
                 "--skipclones");
         String diagnostics = Files.readString(errors);
 
